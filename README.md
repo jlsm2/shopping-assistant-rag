@@ -9,7 +9,10 @@ Assistente de compras com IA para e-commerce: responde dúvidas sobre políticas
 ## Exemplo
 
 ```bash
-curl -s localhost:8000/chat -H 'Content-Type: application/json' \
+curl -s localhost:8000/chat \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $SERVICE_TOKEN" \
+  -H 'X-End-User-Id: sessao-abc123' \
   -d '{"message": "Qual o prazo para trocar um produto?"}'
 ```
 
@@ -30,8 +33,8 @@ Quando não há evidência, a resposta é sempre a mesma mensagem fixa, com `"fa
 
 ```mermaid
 flowchart TD
-    A[POST /chat] --> B[Limite de tamanho + rate limit por IP]
-    B --> C[guard.clean_input<br/>remove caracteres invisíveis, limita a 800]
+    A[POST /chat<br/>vindo do backend da loja] --> B[Token de serviço + limite de tamanho<br/>+ rate limit por cliente final]
+    B --> C[guard.clean_input e redact_pii<br/>remove caracteres invisíveis, limita a 800,<br/>mascara CPF, telefone, cartão, e-mail]
     C --> D[Index.search<br/>BM25 na base de conhecimento]
     D --> E[Monta o turno do usuário<br/>documentos e pergunta em envelopes escapados]
     E --> F{LLM<br/>saída em JSON com schema}
@@ -51,7 +54,7 @@ flowchart TD
 | `app/prompts.py` | System prompt estável, com frase-canário |
 | `app/assistant.py` | Orquestração: busca, loop de ferramentas, validação |
 | `app/llm.py` | Interface neutra de LLM (`LLMClient`) e seus tipos |
-| `app/api.py` | FastAPI: `POST /chat`, `GET /health`, rate limit, CORS |
+| `app/api.py` | FastAPI: `POST /chat`, `GET /health`, autenticação de serviço, rate limit, CORS |
 
 Sem LangChain nem LlamaIndex: o pipeline cabe em cerca de 500 linhas e cada etapa pode ser lida e testada.
 
@@ -101,6 +104,30 @@ Além disso:
 - Cumprimentos ("oi", "obrigada") recebem uma saudação fixa de `store.json`. O texto do modelo é descartado.
 - O motivo de cada fallback é logado (sem a mensagem da cliente) e alimenta as métricas.
 
+## Além das três: acesso e privacidade
+
+### Só o backend da loja chama o `/chat`
+
+O `/chat` não é público. Toda chamada precisa de `Authorization: Bearer <token>`, com um dos tokens de `SERVICE_TOKENS`. O navegador da cliente fala com o backend da loja (uma rota interna do Next.js, por exemplo), e é o backend que chama o assistente. O token nunca vai para o navegador.
+
+- Sem token configurado o servidor não sobe e, se subisse, recusaria tudo (falha fechada).
+- A comparação é em tempo constante, e cada token precisa de pelo menos 32 caracteres.
+- Para trocar o token sem derrubar o chat: configure `novo,antigo`, atualize o backend da loja e depois remova o antigo.
+- `GET /health` continua aberto, para o monitoramento.
+
+Como toda chamada passa a vir do mesmo IP (o do backend), o rate limit usa o cabeçalho `X-End-User-Id`: um identificador opaco da cliente (id de sessão ou IP) que o backend informa. **Sem esse cabeçalho, todas as clientes dividem a mesma cota.**
+
+### Dados pessoais (LGPD)
+
+O provedor de LLM é um terceiro, e o assistente não precisa de nenhum dado pessoal para responder. Antes de a mensagem sair do servidor, `guard.redact_pii` troca por `[dado pessoal removido]`:
+
+- e-mails;
+- qualquer sequência com 8 ou mais dígitos, com ou sem separadores: CPF, CNPJ, telefone, cartão, CEP.
+
+Nomes e endereços por extenso **não** são detectados. Números de pedido com menos de 8 dígitos passam.
+
+O servidor não guarda conversas: não há banco, a mensagem da cliente não é escrita em log (só o motivo do fallback) e a resposta de erro de validação não devolve o que foi enviado. O que o provedor de LLM retém depende do contrato com ele, e esse é um critério para a escolha: retenção zero ou curta, e sem uso dos dados para treino.
+
 ## Métricas
 
 O conjunto de avaliação (`evals/cases.jsonl`) tem 80 casos escritos à mão a partir da base fictícia: 35 de resposta, 10 de produto, 10 fora de escopo e 25 de injection (pedido do prompt, troca de persona, outra língua, link externo, cupom inventado, preço falso, ferramenta inexistente, quebra de envelope e dois casos de injection indireta com um documento envenenado em `evals/fixtures/`).
@@ -141,9 +168,13 @@ cp .env.example .env
 uvicorn app.api:app       # depende do adaptador de LLM
 ```
 
-Configuração por variáveis de ambiente (ver `.env.example`): `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
+Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` (obrigatória), `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
 
-Em produção, atrás de um proxy reverso: rode o uvicorn com `--proxy-headers` (para o rate limit ver o IP real) e imponha o limite de tamanho de corpo também no proxy.
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera um SERVICE_TOKENS
+```
+
+Em produção: sirva por HTTPS (o token vai no cabeçalho), mantenha o serviço em rede interna se possível e imponha o limite de tamanho de corpo também no proxy reverso.
 
 ## Conectar o provedor de LLM
 
@@ -169,6 +200,8 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 - **Busca lexical.** Sinônimos e paráfrases distantes escapam do BM25.
 - **Single-turn.** Perguntas de continuação ("e para o Sul?") não têm contexto.
 - **Rate limit em memória**, por processo. Com mais de um worker, usar Redis.
+- **Token único compartilhado.** Serve para um backend chamando o assistente. Não identifica a cliente nem dá permissões diferentes por chamador; para a v3 (pedidos), a identidade da cliente tem que vir de um JWT de sessão validado.
+- **Máscara de dados pessoais por padrão de texto.** Pega documentos, telefones, cartões e e-mails; não pega nomes nem endereços.
 - **Falsos positivos do filtro de links.** Texto como "fim.Depois" (sem espaço após o ponto) é lido como domínio e leva ao fallback.
 
 ## Roadmap
