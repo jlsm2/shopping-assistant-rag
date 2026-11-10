@@ -34,6 +34,7 @@ Quando não há evidência, a resposta é sempre a mesma mensagem fixa, com `"fa
 ```mermaid
 flowchart TD
     A[POST /chat<br/>vindo do backend da loja] --> B[Token de serviço + limite de tamanho<br/>+ rate limit por cliente final]
+    B -. teto diário gasto .-> X
     B --> C[guard.clean_input e redact_pii<br/>remove caracteres invisíveis, limita a 800,<br/>mascara CPF, telefone, cartão, e-mail]
     C --> D[Index.search<br/>BM25 na base de conhecimento]
     D --> E[Monta o turno do usuário<br/>documentos e pergunta em envelopes escapados]
@@ -54,7 +55,9 @@ flowchart TD
 | `app/prompts.py` | System prompt estável, com frase-canário |
 | `app/assistant.py` | Orquestração: busca, loop de ferramentas, validação |
 | `app/llm.py` | Interface neutra de LLM (`LLMClient`) e seus tipos |
-| `app/api.py` | FastAPI: `POST /chat`, `GET /health`, autenticação de serviço, rate limit, CORS |
+| `app/api.py` | FastAPI: `POST /chat`, `GET /health`, `GET /metrics`, autenticação de serviço, rate limit, CORS |
+| `app/budget.py` | Teto diário de tokens |
+| `app/telemetry.py` | Id de requisição e métricas no formato do Prometheus |
 
 Sem LangChain nem LlamaIndex: o pipeline cabe em cerca de 500 linhas e cada etapa pode ser lida e testada.
 
@@ -104,7 +107,7 @@ Além disso:
 - Cumprimentos ("oi", "obrigada") recebem uma saudação fixa de `store.json`. O texto do modelo é descartado.
 - O motivo de cada fallback é logado (sem a mensagem da cliente) e alimenta as métricas.
 
-## Além das três: acesso e privacidade
+## Além das três: acesso, privacidade, custo e operação
 
 ### Só o backend da loja chama o `/chat`
 
@@ -128,7 +131,38 @@ Nomes e endereços por extenso **não** são detectados. Números de pedido com 
 
 O servidor não guarda conversas: não há banco, a mensagem da cliente não é escrita em log (só o motivo do fallback) e a resposta de erro de validação não devolve o que foi enviado. O que o provedor de LLM retém depende do contrato com ele, e esse é um critério para a escolha: retenção zero ou curta, e sem uso dos dados para treino.
 
-## Métricas
+### Teto de gasto
+
+Um endpoint de chat é uma forma de gastar o dinheiro de outra pessoa. Há três limites, do mais fino ao mais grosso:
+
+| Limite | Padrão | O que acontece ao estourar |
+|---|---|---|
+| Mensagens por cliente (`RATE_LIMIT_PER_MINUTE`) | 20 por minuto | `429` com `Retry-After` |
+| Tempo por pergunta (`LLM_TIMEOUT_SECONDS`) | 30 s, somando as rodadas de ferramenta | Fallback fixo (`deadline_exceeded`), ou `502` se o provedor estourar no meio de uma chamada |
+| Tokens por dia (`DAILY_TOKEN_BUDGET`) | 2.000.000 (entrada + saída) | Fallback fixo (`budget_exhausted`) até 00:00 UTC, sem chamar o modelo |
+
+O teto diário é em tokens porque é a unidade comum a qualquer provedor. Para transformar em dinheiro, multiplique pelo preço do modelo escolhido e ajuste o número. Quando o teto é atingido a cliente não vê erro: recebe a mensagem com o contato humano.
+
+### Observabilidade
+
+- **Id de requisição.** Toda resposta traz `X-Request-Id`. Se o backend da loja enviar o seu (até 64 caracteres, letras, dígitos, `.`, `_`, `-`), ele é reaproveitado; senão um é gerado. O mesmo id aparece em todas as linhas de log daquela pergunta.
+- **Uma linha de log por pergunta**, sem a mensagem da cliente:
+  `chat request_id=loja-req-42 outcome=fallback reason=needs_human duration_ms=812 tokens_in=950 tokens_out=40`
+- **`GET /metrics`** no formato do Prometheus, protegido pelo mesmo token de serviço:
+
+| Métrica | O que responde |
+|---|---|
+| `chat_outcomes_total{outcome}` | Quantas perguntas foram respondidas, caíram no fallback ou deram erro |
+| `chat_fallbacks_total{reason}` | Por que caiu no fallback (`needs_human`, `ungrounded_number`, `external_link`, `budget_exhausted`...) |
+| `chat_errors_total{kind}` | Falhas do provedor ou entrada inválida |
+| `chat_duration_seconds` | Histograma de latência |
+| `llm_tokens_total{direction}` | Tokens de entrada e saída |
+| `llm_daily_tokens_used`, `llm_daily_token_budget` | Quanto do teto do dia já foi gasto |
+| `http_responses_total{path,status}` | Respostas por rota e status (inclui `401` e `429`) |
+
+- **Alertas.** `ops/prometheus-alerts.yml` traz regras prontas: taxa de fallback acima de 40%, respostas suspeitas barradas (link, marcação, vazamento do prompt, pedido de credencial), 80% do teto diário gasto, erros do provedor, latência p95 acima de 10 s e chamadas sem token.
+
+## Métricas do eval
 
 O conjunto de avaliação (`evals/cases.jsonl`) tem 80 casos escritos à mão a partir da base fictícia: 35 de resposta, 10 de produto, 10 fora de escopo e 25 de injection (pedido do prompt, troca de persona, outra língua, link externo, cupom inventado, preço falso, ferramenta inexistente, quebra de envelope e dois casos de injection indireta com um documento envenenado em `evals/fixtures/`).
 
@@ -168,7 +202,7 @@ cp .env.example .env
 uvicorn app.api:app       # depende do adaptador de LLM
 ```
 
-Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` (obrigatória), `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
+Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` (obrigatória), `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera um SERVICE_TOKENS
@@ -182,7 +216,7 @@ Em produção: sirva por HTTPS (o token vai no cabeçalho), mantenha o serviço 
 2. Devolva o adaptador em `app.api.build_llm()`.
 3. Adicione a credencial no `.env` e o SDK nas dependências.
 
-O adaptador precisa garantir o que a segurança pressupõe (está detalhado no docstring de `app/llm.py`): o `system` vai no canal de sistema do provedor; `response_schema` é imposto com saída estruturada; recusa de segurança vira `stop="refusal"` e corte por tokens vira `stop="truncated"`; erros do provedor viram `LLMRateLimited` / `LLMUnavailable` / `LLMError`, e a mensagem do provedor nunca chega à cliente.
+O adaptador precisa garantir o que a segurança pressupõe (está detalhado no docstring de `app/llm.py`): o `system` vai no canal de sistema do provedor; `response_schema` é imposto com saída estruturada; recusa de segurança vira `stop="refusal"` e corte por tokens vira `stop="truncated"`; erros do provedor viram `LLMRateLimited` / `LLMUnavailable` / `LLMError`, e a mensagem do provedor nunca chega à cliente. Para o teto de gasto valer, ele também precisa respeitar o `timeout` recebido em cada chamada (contando as retentativas do SDK), limitar os tokens de saída e devolver em `usage` o que o provedor cobrou.
 
 ## Como adaptar para outra loja
 
@@ -199,7 +233,7 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 - **Sem contas.** "Dois sets saem por R$ 119,80" cai no fallback, porque a soma não está nas fontes. É proposital.
 - **Busca lexical.** Sinônimos e paráfrases distantes escapam do BM25.
 - **Single-turn.** Perguntas de continuação ("e para o Sul?") não têm contexto.
-- **Rate limit em memória**, por processo. Com mais de um worker, usar Redis.
+- **Rate limit, teto diário e métricas em memória**, por processo. Reiniciar o servidor zera os três, e com mais de um worker cada um tem a sua contagem (o teto efetivo vira teto × workers). Para mais de um worker, guardar em Redis.
 - **Token único compartilhado.** Serve para um backend chamando o assistente. Não identifica a cliente nem dá permissões diferentes por chamador; para a v3 (pedidos), a identidade da cliente tem que vir de um JWT de sessão validado.
 - **Máscara de dados pessoais por padrão de texto.** Pega documentos, telefones, cartões e e-mails; não pega nomes nem endereços.
 - **Falsos positivos do filtro de links.** Texto como "fim.Depois" (sem espaço após o ponto) é lido como domínio e leva ao fallback.

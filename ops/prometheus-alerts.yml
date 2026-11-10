@@ -1,0 +1,65 @@
+# Prometheus alerting rules for GET /metrics (scrape it with the service token
+# as a bearer token). Thresholds are starting points: tune them after the first
+# weeks of real traffic.
+groups:
+  - name: shopping-assistant
+    rules:
+      # The headline signal: the bot is sending too many customers to a human.
+      # Usual causes: the knowledge base lacks an answer, retrieval got worse,
+      # or a prompt/model change made the model draft ungrounded answers.
+      - alert: ChatFallbackRateHigh
+        expr: |
+          sum(rate(chat_outcomes_total{outcome="fallback"}[15m]))
+            / sum(rate(chat_outcomes_total[15m])) > 0.4
+          and sum(increase(chat_outcomes_total[15m])) > 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 40% of chat answers fell back to the human contact.
+          description: Break it down with chat_fallbacks_total by reason.
+
+      # These reasons mean the model tried to emit a link, markup, the system
+      # prompt or a request for credentials. Either an attack or a bad model.
+      - alert: ChatSuspiciousAnswersBlocked
+        expr: |
+          sum(increase(chat_fallbacks_total{reason=~"prompt_leak|external_link|markup_in_answer|sensitive_request|ungrounded_contact"}[15m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: The guards blocked several suspicious model answers in 15 minutes.
+
+      - alert: ChatDailyBudgetNearlySpent
+        expr: llm_daily_tokens_used / llm_daily_token_budget > 0.8
+        labels:
+          severity: warning
+        annotations:
+          summary: Over 80% of today's LLM token budget is spent.
+          description: At 100% every question gets the fallback until 00:00 UTC.
+
+      - alert: ChatProviderErrors
+        expr: |
+          sum(rate(chat_errors_total{kind=~"llm_.*"}[10m]))
+            / sum(rate(chat_outcomes_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 10% of questions fail because of the LLM provider.
+
+      - alert: ChatSlow
+        expr: |
+          histogram_quantile(0.95, sum(rate(chat_duration_seconds_bucket[10m])) by (le)) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 95th percentile chat latency is above 10 seconds.
+
+      # Someone is calling /chat without the service token.
+      - alert: ChatUnauthorizedCalls
+        expr: sum(increase(http_responses_total{path="/chat",status="401"}[10m])) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated unauthenticated calls to /chat.
