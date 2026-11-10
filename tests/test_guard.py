@@ -318,6 +318,30 @@ def test_price_followed_by_another_number_is_not_misread(answer):
     assert grounding(answer) is None
 
 
+def capped(*caps: float, products=(NUDE, COLA)) -> guard.Evidence:
+    proof = evidence(products=products)
+    proof.price_caps.update(caps)
+    return proof
+
+
+def test_price_cap_used_by_the_search_grounds_the_cap_when_every_product_fits():
+    assert grounding("Até R$ 70: Nude por R$ 59,90.", (), (NUDE["id"],), capped(70)) is None
+
+
+@pytest.mark.parametrize(
+    ("answer", "products", "caps"),
+    [
+        ("Até R$ 50: Nude por R$ 59,90.", (NUDE["id"],), (50,)),  # a cited product is above it
+        ("Até R$ 70.", (), (70,)),  # nothing cited that the cap could bound
+        ("Até R$ 70: Nude por R$ 59,90.", (NUDE["id"],), ()),  # the search used no cap
+    ],
+)
+def test_price_cap_grounds_nothing_unless_it_is_a_true_bound(answer, products, caps):
+    citations = () if products else (FRETE.id,)
+
+    assert grounding(answer, citations, products, capped(*caps)) == "ungrounded_number"
+
+
 # --- grounding: codes, contacts, sensitive data ----------------------------------
 
 

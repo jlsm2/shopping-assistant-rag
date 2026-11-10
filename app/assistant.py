@@ -247,6 +247,8 @@ class Assistant:
                 found = self._catalog.search(arguments.query, arguments.max_price)
                 views = [public_view(product) for product in found[:MAX_PRODUCT_RESULTS]]
                 payload: Any = views
+                if arguments.max_price is not None:
+                    evidence.price_caps.add(arguments.max_price)
             else:
                 product = self._catalog.get(arguments.product_id)
                 views = [public_view(product)] if product else []

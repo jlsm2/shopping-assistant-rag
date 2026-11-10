@@ -230,6 +230,7 @@ class Evidence:
     chunks: dict[str, Chunk] = field(default_factory=dict)
     products: dict[str, dict[str, Any]] = field(default_factory=dict)  # public views
     store_facts: tuple[str, ...] = ()  # always true, e.g. the human contact
+    price_caps: set[float] = field(default_factory=set)  # max_price the searches used
 
     def cited_texts(self, citations: Iterable[str], products: Iterable[str]) -> list[str]:
         """Only what the answer cites counts, so a number cannot be borrowed
@@ -237,6 +238,15 @@ class Evidence:
         documents = [f"{self.chunks[i].title}\n{self.chunks[i].text}" for i in citations]
         views = [json.dumps(self.products[i], ensure_ascii=False) for i in products]
         return [*documents, *views, *self.store_facts]
+
+
+def _true_price_caps(products: list[str], evidence: Evidence) -> set[str]:
+    """Models repeat the customer's price cap ("até R$ 70"). The cap the search
+    filtered by is true only as a bound on what the answer cites."""
+    if not products:
+        return set()
+    highest = max(evidence.products[product]["price"] for product in products)
+    return {canonical_number(f"{cap:f}") for cap in evidence.price_caps if cap >= highest}
 
 
 def validate_grounding(
@@ -250,7 +260,8 @@ def validate_grounding(
     if not citations and not products:
         return "no_evidence_cited"
     texts = evidence.cited_texts(citations, products)
-    if extract_numbers(answer) - set().union(*map(extract_numbers, texts)):
+    known = set().union(*map(extract_numbers, texts)) | _true_price_caps(products, evidence)
+    if extract_numbers(answer) - known:
         return "ungrounded_number"
     if extract_codes(answer) - set().union(*map(extract_codes, texts)):
         return "ungrounded_code"

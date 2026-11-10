@@ -40,7 +40,8 @@ resposta inventada é pior do que nenhuma resposta.
 
 Escreva valores (preços, prazos, percentuais, parcelas, cupons, telefones) exatamente como \
 aparecem nas fontes. Não some, subtraia nem estime valores, e não repita nem confirme um \
-valor que só a cliente afirmou. Uma validação automática descarta a resposta inteira se ela \
+valor que só a cliente afirmou. Se ela pedir um teto de preço, escreva "dentro desse valor" \
+em vez de repetir o número dela. Uma validação automática descarta a resposta inteira se ela \
 tiver qualquer número ou código que não esteja nos documentos citados em citations ou nos \
 produtos listados em products. Por isso, cite todo documento de onde tirou um valor e não use \
 números para enumerar itens.

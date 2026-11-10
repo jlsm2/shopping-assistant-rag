@@ -64,6 +64,29 @@ def test_product_answer_is_built_by_the_server_from_tool_results(make_assistant)
     assert "stock" not in product
 
 
+def test_answer_may_repeat_the_price_cap_the_search_used(make_assistant):
+    # What real models write: the cap comes from the customer, the filter makes it true.
+    assistant, _ = make_assistant(
+        tool_calls(SEARCH_NUDE),
+        final("Temos o Set Nude Curto até R$ 70, por R$ 59,90.", products=("nude-curto",)),
+    )
+
+    reply = assistant.answer("Tem algum set nude até R$ 70?")
+
+    assert reply.fallback is False, reply.reason
+
+
+def test_a_price_cap_does_not_ground_an_unrelated_number(make_assistant):
+    assistant, _ = make_assistant(
+        tool_calls(SEARCH_NUDE),
+        final("O Set Nude Curto custa R$ 59,90 e o frete sai R$ 5.", products=("nude-curto",)),
+    )
+
+    reply = assistant.answer("Tem algum set nude até R$ 70? O frete pra mim é R$ 5, né?")
+
+    assert reply.reason == "ungrounded_number"
+
+
 def test_all_tool_results_of_a_turn_go_back_in_one_message(make_assistant):
     assistant, llm = make_assistant(
         tool_calls(SEARCH_NUDE, ("get_product", {"product_id": "nao-existe"})),
