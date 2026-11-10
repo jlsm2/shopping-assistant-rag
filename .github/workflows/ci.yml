@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest --cov=app --cov-fail-under=80
+      - name: Retrieval eval (offline, free)
+        run: python -m evals.run_evals --retrieval-only
+
+  # Full eval calls the LLM and costs money: manual only.
+  # Needs the provider adapter (app/api.py:build_llm) and its key as a secret.
+  evals:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: python -m evals.run_evals
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
