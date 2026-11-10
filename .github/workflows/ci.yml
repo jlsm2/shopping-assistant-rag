@@ -25,7 +25,8 @@ jobs:
         run: python -m evals.run_evals --retrieval-only
 
   # Full eval calls the LLM and costs money: manual only.
-  # Needs the repository secret ANTHROPIC_API_KEY.
+  # Needs the repository secret LLM_API_KEY and the repository variables
+  # LLM_PROVIDER and LLM_MODEL (plus LLM_BASE_URL for a compatible service).
   evals:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -38,4 +39,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: python -m evals.run_evals
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}

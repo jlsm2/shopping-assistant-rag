@@ -4,7 +4,7 @@ Assistente de compras com IA para e-commerce: responde dúvidas sobre políticas
 
 É genérico (qualquer loja troca os arquivos em `data/`). Os dados de exemplo são de uma loja fictícia de unhas postiças, a "Loja Demo".
 
-> **Estado atual:** o pipeline está implementado e testado offline, com adaptador para a API da Anthropic (Claude). O modelo é configurável pelo `.env`. O eval completo ainda **não foi executado com um modelo real**, então as métricas que dependem dele estão marcadas como pendentes. Veja [Provedor de LLM](#provedor-de-llm).
+> **Estado atual:** o pipeline está implementado e testado offline. O modelo de IA é escolhido inteiramente pelo `.env` (provedor, chave, endereço e modelo); não há provedor embutido. O eval completo ainda **não foi executado com um modelo real**, então as métricas que dependem dele estão marcadas como pendentes. Veja [Provedor de LLM](#provedor-de-llm).
 
 ## Exemplo
 
@@ -55,7 +55,9 @@ flowchart TD
 | `app/prompts.py` | System prompt estável, com frase-canário |
 | `app/assistant.py` | Orquestração: busca, loop de ferramentas, validação |
 | `app/llm.py` | Interface neutra de LLM (`LLMClient`) e seus tipos |
-| `app/anthropic_llm.py` | Adaptador da API da Anthropic. Único módulo que importa o SDK do provedor |
+| `app/providers.py` | Escolhe o adaptador a partir da configuração |
+| `app/anthropic_llm.py` | Adaptador da API da Anthropic |
+| `app/openai_llm.py` | Adaptador de qualquer API no formato Chat Completions da OpenAI |
 | `app/api.py` | FastAPI: `POST /chat`, `GET /health`, `GET /metrics`, autenticação de serviço, rate limit, CORS |
 | `app/budget.py` | Teto diário de tokens |
 | `app/telemetry.py` | Id de requisição e métricas no formato do Prometheus |
@@ -199,13 +201,13 @@ pip install -e ".[dev]"
 pytest --cov=app          # testes offline, sem rede
 ruff check . && ruff format --check .
 
-cp .env.example .env      # preencha SERVICE_TOKENS e ANTHROPIC_API_KEY; o .env nunca vai para o git
+cp .env.example .env      # preencha LLM_PROVIDER, LLM_MODEL, LLM_API_KEY e SERVICE_TOKENS; o .env nunca vai para o git
 uvicorn app.api:app
 ```
 
 O `.env` da pasta atual é lido automaticamente pela API e pelo eval. Uma variável já definida no ambiente tem prioridade sobre o arquivo, e `ENV_FILE` aponta para outro caminho se precisar.
 
-Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` e `ANTHROPIC_API_KEY` (obrigatórias), `ASSISTANT_MODEL`, `ASSISTANT_EFFORT`, `ASSISTANT_MAX_TOKENS`, `ASSISTANT_SERVER_FALLBACK`, `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
+Configuração por variáveis de ambiente (ver `.env.example`): `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` e `SERVICE_TOKENS` (obrigatórias), `LLM_BASE_URL`, `LLM_EFFORT`, `LLM_MAX_TOKENS`, `LLM_REFUSAL_FALLBACK`, `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera um SERVICE_TOKENS
@@ -215,24 +217,78 @@ Em produção: sirva por HTTPS (o token vai no cabeçalho), mantenha o serviço 
 
 ## Provedor de LLM
 
-O assistente usa a API da Anthropic (Claude) pelo SDK oficial. Crie a chave em `console.anthropic.com` e coloque em `ANTHROPIC_API_KEY` no `.env`. Sem a chave o servidor não sobe.
+Nada sobre o modelo de IA está fixo no código. Provedor, chave, endereço da API e modelo vêm do `.env`, e sem `LLM_PROVIDER`, `LLM_MODEL` e uma chave o servidor não sobe (com uma mensagem dizendo o que falta).
 
 | Variável | Padrão | Para que serve |
 |---|---|---|
-| `ASSISTANT_MODEL` | `claude-opus-5-5` | Qual modelo responde. Aceita qualquer id da API, por exemplo `claude-sonnet-5-5` ou `claude-haiku-5-5` |
-| `ASSISTANT_EFFORT` | `low` | Quanto o modelo raciocina antes de responder (`low`, `medium`, `high`, `xhigh`, `max`). Vazio não envia o parâmetro |
-| `ASSISTANT_MAX_TOKENS` | `4096` | Teto de tokens de saída por chamada, incluindo o raciocínio |
-| `ASSISTANT_SERVER_FALLBACK` | `true` | Se o modelo recusar por um filtro de segurança, a própria API refaz a chamada no modelo que a Anthropic recomenda para o caso. No `claude-haiku-5-5` não tem efeito |
+| `LLM_PROVIDER` | nenhum | Tipo de API: `anthropic` ou `openai`. `openai` vale para qualquer API no formato Chat Completions da OpenAI |
+| `LLM_MODEL` | nenhum | Id do modelo, como o provedor o chama |
+| `LLM_API_KEY` | nenhum | Chave do provedor. Servidor local sem chave: escreva `local` |
+| `LLM_BASE_URL` | endereço do próprio provedor | Endereço da API, para serviços compatíveis e servidores locais |
+| `LLM_EFFORT` | vazio (não envia) | Esforço de raciocínio, se o modelo tiver esse controle |
+| `LLM_MAX_TOKENS` | `4096` | Teto de tokens de saída por chamada, incluindo o raciocínio |
+| `LLM_REFUSAL_FALLBACK` | `true` | Só Anthropic: se o modelo recusar por um filtro de segurança, a própria API refaz a chamada no modelo que ela recomenda para o caso |
 
-Trocar de modelo muda custo e qualidade, então rode o eval de novo a cada troca. Preços em novembro de 2026, por milhão de tokens de entrada e saída: Opus 5.5 US$ 4 e US$ 20; Sonnet 5.5 US$ 2 e US$ 10; Haiku 5.5 US$ 0,10 e US$ 0,50. Confira a página de preços da Anthropic antes de decidir, e passe os valores ao eval com `--price-in` e `--price-out` para ver o custo da execução.
+A chave também pode vir da variável própria de cada SDK (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Ela é lida do ambiente e nunca entra no objeto de configuração, para não aparecer em logs.
 
-O que o adaptador envia: o prompt de sistema no canal `system`; as duas ferramentas com `strict: true`; a resposta final presa ao schema JSON por `output_config.format`; `tool_choice` no automático. Ele não envia `temperature` nem configuração de `thinking`, que os modelos atuais rejeitam.
+Exemplos de `.env`:
 
-### Usar outro provedor
+```bash
+# API da Anthropic
+LLM_PROVIDER=anthropic
+LLM_MODEL=<id do modelo>
+LLM_API_KEY=<sua chave>
 
-O assistente só conhece a interface `app.llm.LLMClient` (um método, `complete`). Para trocar: escreva outro adaptador, devolva-o em `app.api.build_llm()` e acrescente o SDK às dependências. Nada mais muda.
+# API da OpenAI
+LLM_PROVIDER=openai
+LLM_MODEL=<id do modelo>
+LLM_API_KEY=<sua chave>
 
-O adaptador precisa garantir o que a segurança pressupõe (está detalhado no docstring de `app/llm.py`): o `system` vai no canal de sistema do provedor; `response_schema` é imposto com saída estruturada; recusa de segurança vira `stop="refusal"` e corte por tokens vira `stop="truncated"`; erros do provedor viram `LLMRateLimited` / `LLMUnavailable` / `LLMError`, e a mensagem do provedor nunca chega à cliente. Para o teto de gasto valer, ele também precisa respeitar o `timeout` recebido em cada chamada (contando as retentativas do SDK), limitar os tokens de saída e devolver em `usage` o que o provedor cobrou.
+# Serviço compatível com o formato da OpenAI (Gemini, Groq, OpenRouter...)
+LLM_PROVIDER=openai
+LLM_BASE_URL=<endereço da API do serviço>
+LLM_MODEL=<id do modelo>
+LLM_API_KEY=<sua chave>
+
+# Modelo local, sem custo (LM Studio; no Ollama a porta é 11434)
+LLM_PROVIDER=openai
+LLM_BASE_URL=http://localhost:1234/v1
+LLM_MODEL=<nome do modelo carregado>
+LLM_API_KEY=local
+```
+
+O `.env.example` lista os endereços mais comuns.
+
+### O que o modelo precisa suportar
+
+Não é qualquer modelo que serve. O assistente depende de duas capacidades:
+
+- **chamada de ferramentas** (tool calling), para consultar o catálogo;
+- **saída em JSON presa a um schema** (structured output), para a resposta final.
+
+Um modelo sem a segunda pode devolver texto fora do formato, e aí a resposta cai no fallback (`invalid_json`); nada inseguro chega à cliente, mas o bot fica inútil. Modelos locais pequenos costumam falhar nisso.
+
+O que cada adaptador envia:
+
+| | `anthropic` | `openai` |
+|---|---|---|
+| Prompt de sistema | campo `system` | mensagem com papel `system` |
+| Ferramentas | `strict: true` | `function` com `strict: true` |
+| Resposta final | `output_config.format` com o schema | `response_format` do tipo `json_schema` |
+| Teto de saída | `max_tokens` | `max_completion_tokens` |
+| Esforço | `output_config.effort` | `reasoning_effort` |
+
+Nenhum dos dois envia `temperature` nem força a escolha de ferramenta.
+
+**Limite do que foi testado:** os dois adaptadores foram exercitados com o SDK real de cada provedor sobre uma rede simulada, em uma conversa completa com chamada de ferramenta. Nenhum foi executado contra uma API de verdade. Serviços "compatíveis" variam: algum pode rejeitar `strict`, `max_completion_tokens` ou `json_schema`. Se isso acontecer, o erro do provedor aparece no log do servidor (a cliente só vê uma mensagem genérica).
+
+Trocar de modelo muda custo e qualidade, então rode o eval de novo a cada troca, passando o preço do modelo com `--price-in` e `--price-out` para ver o custo da execução.
+
+### Acrescentar outro tipo de API
+
+O assistente só conhece a interface `app.llm.LLMClient` (um método, `complete`). Para uma API que não seja de nenhum dos dois formatos: escreva outro adaptador, acrescente-o em `app/providers.py` e em `LLM_PROVIDERS`, e inclua o SDK nas dependências. Nada mais muda.
+
+O adaptador precisa garantir o que a segurança pressupõe (está detalhado no docstring de `app/llm.py`): o prompt de sistema vai no canal de sistema do provedor; `response_schema` é imposto com saída estruturada; recusa de segurança vira `stop="refusal"` e corte por tokens vira `stop="truncated"`; erros do provedor viram `LLMRateLimited` / `LLMUnavailable` / `LLMError`, e a mensagem do provedor nunca chega à cliente. Para o teto de gasto valer, ele também precisa respeitar o `timeout` recebido em cada chamada (contando as retentativas do SDK), limitar os tokens de saída e devolver em `usage` o que o provedor cobrou.
 
 ## Como adaptar para outra loja
 
