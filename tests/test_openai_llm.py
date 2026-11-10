@@ -48,23 +48,29 @@ def completion(finish_reason="stop", content='{"answer": "ok"}', tool_calls=None
 
 
 class FakeOpenAI:
-    """Records how the adapter calls the SDK and replays one scripted result."""
+    """Records how the adapter calls the SDK and replays scripted results in order
+    (the last one repeats)."""
 
     def __init__(self, result) -> None:
-        self.result = result
+        self.results = result if isinstance(result, list) else [result]
         self.options: dict = {}
-        self.request: dict = {}
+        self.requests: list[dict] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    @property
+    def request(self) -> dict:
+        return self.requests[-1]
 
     def with_options(self, **options):
         self.options = options
         return self
 
     def _create(self, **request):
-        self.request = request
-        if isinstance(self.result, Exception):
-            raise self.result
-        return self.result
+        self.requests.append(request)
+        result = self.results[min(len(self.requests), len(self.results)) - 1]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def complete(result=None, messages=QUESTION, timeout=30.0, **adapter):
@@ -157,6 +163,85 @@ def test_tool_loop_messages_are_translated_and_the_assistant_turn_goes_back_as_i
         {"role": "tool", "tool_call_id": "call_1", "content": "<tool_data>[]</tool_data>"},
         {"role": "tool", "tool_call_id": "call_2", "content": "ERRO: Parâmetros inválidos."},
     ]
+
+
+# --- APIs that refuse tools and a schema in one request (Groq) -------------------
+
+IN_FORMAT = json.dumps({"answer": "ok", "citations": [], "products": [], "outcome": "smalltalk"})
+
+
+def test_split_mode_asks_with_tools_only_and_returns_a_tool_call_as_is():
+    client, outcome, _ = complete(
+        completion("tool_calls", content=None, tool_calls=[tool_call()]),
+        schema_with_tools=False,
+    )
+
+    (request,) = client.requests
+    assert "response_format" not in request
+    assert [tool["function"]["name"] for tool in request["tools"]] == [
+        "search_products",
+        "get_product",
+    ]
+    assert outcome.stop == "tool_calls"
+
+
+def test_split_mode_enforces_the_schema_in_a_second_call_without_tools():
+    client, outcome, _ = complete(
+        [completion(content="Resposta solta, sem JSON."), completion(content=IN_FORMAT)],
+        schema_with_tools=False,
+    )
+
+    first, second = client.requests
+    assert "tools" not in second
+    assert second["response_format"]["json_schema"]["schema"] == ANSWER_SCHEMA
+    assert second["messages"] == first["messages"]
+    assert (outcome.stop, outcome.text) == ("final", IN_FORMAT)
+    assert (outcome.usage.input_tokens, outcome.usage.output_tokens) == (200, 80)
+
+
+def test_split_mode_skips_the_second_call_when_the_answer_already_has_the_fields():
+    client, outcome, _ = complete(completion(content=IN_FORMAT), schema_with_tools=False)
+
+    assert len(client.requests) == 1
+    assert outcome.text == IN_FORMAT
+
+
+@pytest.mark.parametrize("text", ['{"answer": "ok"}', "[]", "não é json"])
+def test_split_mode_does_not_trust_a_partial_or_non_object_answer(text):
+    client, _, _ = complete(
+        [completion(content=text), completion(content=IN_FORMAT)], schema_with_tools=False
+    )
+
+    assert len(client.requests) == 2
+
+
+def test_split_mode_recovers_when_the_tools_call_is_rejected():
+    # gpt-oss on Groq may write the answer as a call to an undeclared tool: 400.
+    rejected = status_error(openai.BadRequestError, 400)
+
+    client, outcome, _ = complete(
+        [rejected, completion(content=IN_FORMAT)], schema_with_tools=False
+    )
+
+    assert len(client.requests) == 2
+    assert "tools" not in client.request
+    assert (outcome.stop, outcome.text) == ("final", IN_FORMAT)
+
+
+def test_split_mode_does_not_retry_a_rate_limit():
+    limited = status_error(openai.RateLimitError, 429)
+
+    client, _, error = complete([limited, completion(content=IN_FORMAT)], schema_with_tools=False)
+
+    assert len(client.requests) == 1
+    assert isinstance(error, LLMRateLimited)
+
+
+def test_split_mode_does_not_retry_a_truncated_or_refused_turn():
+    client, outcome, _ = complete(completion("length"), schema_with_tools=False)
+
+    assert len(client.requests) == 1
+    assert outcome.stop == "truncated"
 
 
 # --- response --------------------------------------------------------------------

@@ -7,6 +7,7 @@ and JSON-schema output. Everything an adapter must guarantee is in `app/llm.py`.
 
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import openai
@@ -14,6 +15,7 @@ import openai
 from app.llm import (
     SDK_RETRIES,
     AssistantMessage,
+    LLMError,
     LLMResponse,
     Message,
     StopReason,
@@ -57,11 +59,14 @@ class OpenAILLM:
         model: str,
         effort: str | None = None,
         max_tokens: int = 4096,
+        schema_with_tools: bool = True,
     ) -> None:
         self._client = client
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
+        # False for APIs that reject tools and a json_schema in one request (Groq).
+        self.schema_with_tools = schema_with_tools
 
     def complete(
         self,
@@ -72,12 +77,17 @@ class OpenAILLM:
         response_schema: dict[str, Any],
         timeout: float,
     ) -> LLMResponse:
-        request: dict[str, Any] = {
+        base: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 *(param for message in messages for param in _to_params(message)),
             ],
+            "max_completion_tokens": self.max_tokens,
+        }
+        if self.effort:
+            base["reasoning_effort"] = self.effort
+        with_tools = {
             "tools": [
                 {
                     "type": "function",
@@ -89,7 +99,9 @@ class OpenAILLM:
                     },
                 }
                 for tool in tools
-            ],
+            ]
+        }
+        with_schema = {
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -97,11 +109,27 @@ class OpenAILLM:
                     "strict": True,
                     "schema": response_schema,
                 },
-            },
-            "max_completion_tokens": self.max_tokens,
+            }
         }
-        if self.effort:
-            request["reasoning_effort"] = self.effort
+        if self.schema_with_tools:
+            return self._send({**base, **with_tools, **with_schema}, timeout)
+
+        # Ask with tools first; once the model stops calling them, impose the
+        # schema in a call without tools. The deadline covers both calls.
+        try:
+            first = self._send({**base, **with_tools}, timeout / 2)
+        except LLMError as error:
+            if type(error) is not LLMError:
+                raise  # rate limit or outage: a second call would not help
+            # gpt-oss on Groq may write the answer as a call to an undeclared
+            # tool, which the API rejects; the call without tools cannot do that.
+            return self._send({**base, **with_schema}, timeout / 2)
+        if first.stop != "final" or _has_schema_fields(first.text, response_schema):
+            return first
+        second = self._send({**base, **with_schema}, timeout / 2)
+        return replace(second, usage=first.usage + second.usage)
+
+    def _send(self, request: dict[str, Any], timeout: float) -> LLMResponse:
         client = self._client.with_options(
             timeout=timeout / (SDK_RETRIES + 1), max_retries=SDK_RETRIES
         )
@@ -110,6 +138,19 @@ class OpenAILLM:
         except (openai.APIStatusError, openai.APIConnectionError) as error:
             raise neutral_error(error, openai) from error
         return _to_response(completion)
+
+
+def _has_schema_fields(text: str, schema: dict[str, Any]) -> bool:
+    """Saves the second call when the model already wrote the answer object.
+
+    Only the field names are checked here; the assistant still validates the
+    answer strictly and falls back when it does not fit.
+    """
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(value, dict) and set(value) == set(schema.get("required", ()))
 
 
 def _to_response(completion: Any) -> LLMResponse:

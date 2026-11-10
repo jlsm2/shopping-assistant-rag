@@ -50,6 +50,7 @@ class Settings:
     llm_effort: str = ""  # reasoning effort; empty: not sent
     llm_max_tokens: int = 4096  # output cap per call, reasoning included
     llm_refusal_fallback: bool = True  # Anthropic only: re-run a safety decline
+    llm_schema_with_tools: bool = True  # "openai" only: false for APIs like Groq
 
     def __post_init__(self) -> None:
         if self.llm_provider not in ("", *LLM_PROVIDERS):
@@ -97,6 +98,8 @@ class Settings:
             llm_effort=env.get("LLM_EFFORT", "").strip(),
             llm_max_tokens=int(env.get("LLM_MAX_TOKENS") or default.llm_max_tokens),
             llm_refusal_fallback=env.get("LLM_REFUSAL_FALLBACK", "true").strip().lower()
+            in ("1", "true", "yes"),
+            llm_schema_with_tools=env.get("LLM_SCHEMA_WITH_TOOLS", "true").strip().lower()
             in ("1", "true", "yes"),
         )
 

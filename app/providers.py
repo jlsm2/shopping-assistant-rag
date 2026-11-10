@@ -49,4 +49,5 @@ def build_llm(settings: Settings) -> LLMClient:
         model=settings.llm_model,
         effort=effort,
         max_tokens=settings.llm_max_tokens,
+        schema_with_tools=settings.llm_schema_with_tools,
     )

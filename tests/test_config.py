@@ -12,6 +12,7 @@ def test_settings_defaults_when_environment_is_empty(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     for name in ("DAILY_TOKEN_BUDGET", "LLM_TIMEOUT_SECONDS", "LLM_REFUSAL_FALLBACK"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("LLM_SCHEMA_WITH_TOOLS", raising=False)
     for name in ("SERVICE_TOKENS", "RETRIEVAL_MIN_SCORE", "MAX_TOOL_ITERATIONS"):
         monkeypatch.delenv(name, raising=False)
 
@@ -34,6 +35,7 @@ def test_settings_read_from_environment(monkeypatch):
     monkeypatch.setenv("LLM_EFFORT", "medium")
     monkeypatch.setenv("LLM_MAX_TOKENS", "1500")
     monkeypatch.setenv("LLM_REFUSAL_FALLBACK", "false")
+    monkeypatch.setenv("LLM_SCHEMA_WITH_TOOLS", "false")
     monkeypatch.setenv("LLM_API_KEY", "never-stored-in-settings")
 
     assert "never-stored" not in repr(Settings.from_env())
@@ -44,6 +46,7 @@ def test_settings_read_from_environment(monkeypatch):
         llm_effort="medium",
         llm_max_tokens=1500,
         llm_refusal_fallback=False,
+        llm_schema_with_tools=False,
         daily_token_budget=500_000,
         llm_timeout_seconds=12.5,
         service_tokens=("a" * 32, "b" * 40),

@@ -65,8 +65,16 @@ def test_openai_compatible_provider_takes_any_base_url_and_model(monkeypatch):
 
     assert isinstance(llm, OpenAILLM)
     assert (llm.model, llm.effort, llm.max_tokens) == ("qualquer-modelo", None, 4096)
+    assert llm.schema_with_tools is True
     assert llm._client.api_key == "local"
     assert str(llm._client.base_url) == "http://localhost:1234/v1/"
+
+
+def test_schema_and_tools_can_be_sent_in_separate_calls(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "gsk-test")
+    settings = Settings(llm_provider="openai", llm_model="m", llm_schema_with_tools=False)
+
+    assert build_llm(settings).schema_with_tools is False
 
 
 @pytest.mark.parametrize(
