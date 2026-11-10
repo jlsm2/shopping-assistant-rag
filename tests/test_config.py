@@ -8,7 +8,9 @@ from app.config import DEFAULT_DATA_DIR, Settings, Store, load_env_file
 def test_settings_defaults_when_environment_is_empty(monkeypatch):
     for name in ("DATA_DIR", "RETRIEVAL_TOP_K", "CORS_ORIGINS", "RATE_LIMIT_PER_MINUTE"):
         monkeypatch.delenv(name, raising=False)
-    for name in ("DAILY_TOKEN_BUDGET", "LLM_TIMEOUT_SECONDS"):
+    for name in ("ASSISTANT_MODEL", "ASSISTANT_EFFORT", "ASSISTANT_MAX_TOKENS"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("DAILY_TOKEN_BUDGET", "LLM_TIMEOUT_SECONDS", "ASSISTANT_SERVER_FALLBACK"):
         monkeypatch.delenv(name, raising=False)
     for name in ("SERVICE_TOKENS", "RETRIEVAL_MIN_SCORE", "MAX_TOOL_ITERATIONS"):
         monkeypatch.delenv(name, raising=False)
@@ -26,8 +28,16 @@ def test_settings_read_from_environment(monkeypatch):
     monkeypatch.setenv("SERVICE_TOKENS", f"{'a' * 32}, {'b' * 40}")
     monkeypatch.setenv("DAILY_TOKEN_BUDGET", "500000")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("ASSISTANT_MODEL", "claude-haiku-5-5")
+    monkeypatch.setenv("ASSISTANT_EFFORT", "medium")
+    monkeypatch.setenv("ASSISTANT_MAX_TOKENS", "1500")
+    monkeypatch.setenv("ASSISTANT_SERVER_FALLBACK", "false")
 
     assert Settings.from_env() == Settings(
+        assistant_model="claude-haiku-5-5",
+        assistant_effort="medium",
+        assistant_max_tokens=1500,
+        assistant_server_fallback=False,
         daily_token_budget=500_000,
         llm_timeout_seconds=12.5,
         service_tokens=("a" * 32, "b" * 40),
@@ -46,6 +56,9 @@ def test_settings_read_from_environment(monkeypatch):
         {"cors_origins": ("*",)},
         {"service_tokens": ("short-secret",)},
         {"daily_token_budget": 0},
+        {"assistant_model": ""},
+        {"assistant_effort": "turbo"},
+        {"assistant_max_tokens": 0},
         {"llm_timeout_seconds": 0},
         {"rate_limit_per_minute": 0},
         {"max_tool_iterations": 0},

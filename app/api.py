@@ -4,6 +4,7 @@ import hmac
 import ipaddress
 import logging
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -16,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.anthropic_llm import AnthropicLLM
 from app.assistant import Assistant
 from app.budget import TokenBudget
 from app.catalog import JsonCatalog
@@ -113,11 +115,18 @@ def client_key(host: str | None) -> str:
     return str(address)
 
 
-def build_llm() -> LLMClient:
-    """The single place where the LLM provider gets plugged in."""
-    raise RuntimeError(
-        "No LLM provider configured yet. Implement app.llm.LLMClient for the chosen "
-        "API and return it from app.api.build_llm()."
+def build_llm(settings: Settings) -> LLMClient:
+    """The single place where the LLM provider is chosen."""
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set. Create a key at console.anthropic.com "
+            "and add it to .env."
+        )
+    return AnthropicLLM(
+        model=settings.assistant_model,
+        effort=settings.assistant_effort or None,
+        max_tokens=settings.assistant_max_tokens,
+        server_fallback=settings.assistant_server_fallback,
     )
 
 
@@ -165,7 +174,7 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
                 "SERVICE_TOKENS is not set. Generate one with "
                 '`python -c "import secrets; print(secrets.token_urlsafe(32))"`.'
             )
-        app.state.assistant = assistant or build_assistant(settings, build_llm())
+        app.state.assistant = assistant or build_assistant(settings, build_llm(settings))
         yield
 
     def require_service_token(request: Request) -> None:

@@ -253,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.api import build_llm
 
     try:
-        llm = build_llm()
+        llm = build_llm(settings)
     except RuntimeError as error:
         print(f"cannot run the full eval: {error}", file=sys.stderr)
         return 2

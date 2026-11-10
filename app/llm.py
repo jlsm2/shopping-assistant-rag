@@ -1,8 +1,8 @@
 """Provider-neutral LLM interface.
 
-The assistant only talks to `LLMClient`. The concrete provider (which API, which
-model) is not chosen yet; when it is, write one adapter that implements
-`LLMClient` and return it from `app.api.build_llm()`.
+The assistant only talks to `LLMClient`. The current adapter is
+`app.anthropic_llm.AnthropicLLM`, wired in `app.api.build_llm()`. To use another
+provider, write one more adapter and return it from there.
 
 What an adapter must guarantee, because the security model depends on it:
 - `system` goes in the provider's system/developer channel, never merged into a
@@ -11,8 +11,9 @@ What an adapter must guarantee, because the security model depends on it:
   so `LLMResponse.text` is JSON matching the schema when `stop == "final"`.
 - Tool arguments are schema-validated by the provider when it supports it
   (every `ToolSpec.parameters` already sets `additionalProperties: false`).
-- A safety refusal maps to `stop="refusal"` and an output cut by the token
-  limit maps to `stop="truncated"`. Neither may be reported as "final".
+- A safety refusal maps to `stop="refusal"`, an output cut by the token limit
+  maps to `stop="truncated"` and anything else that is not a clean finish maps
+  to `stop="other"`. None of them may be reported as "final".
 - `AssistantMessage.response.raw` (the provider-native assistant turn) is sent
   back unchanged on the next request of the same tool loop.
 - Provider errors are translated to the `LLMError` family below; their
@@ -27,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-StopReason = Literal["final", "tool_calls", "refusal", "truncated"]
+StopReason = Literal["final", "tool_calls", "refusal", "truncated", "other"]
 
 
 @dataclass(frozen=True)
