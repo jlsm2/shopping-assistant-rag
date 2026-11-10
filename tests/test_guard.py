@@ -56,6 +56,43 @@ def test_clean_output_removes_invisible_characters_and_folds_lookalikes():
     assert guard.clean_output("custa R＄​５,00") == "custa R$5,00"
 
 
+# --- personal data -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "123.456.789-09",  # CPF
+        "12345678909",
+        "12.345.678/0001-95",  # CNPJ
+        "(11) 98888-7777",
+        "+55 11 98888 7777",
+        "4111 1111 1111 1111",  # card
+        "01310-100",  # CEP
+        "maria.silva+loja@correio.example",
+    ],
+)
+def test_redact_pii_masks_documents_phones_cards_and_emails(secret):
+    redacted = guard.redact_pii(f"meus dados: {secret} pode usar")
+
+    assert guard.PII_PLACEHOLDER in redacted
+    assert not any(part in redacted for part in ("789", "8888", "1111", "1310", "maria", "correio"))
+    assert redacted.startswith("meus dados:") and redacted.endswith("pode usar")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tem algum set nude até R$ 70,00?",
+        "Quero 2 kits e 3 colas, em 3x.",
+        "Meu pedido é o 482913 e chegou em 7 dias.",
+        "O frete acima de R$ 150,00 é grátis em 2026?",
+    ],
+)
+def test_redact_pii_keeps_prices_quantities_and_short_numbers(text):
+    assert guard.redact_pii(text) == text
+
+
 # --- envelopes ---------------------------------------------------------------
 
 

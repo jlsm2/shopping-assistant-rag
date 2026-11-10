@@ -134,7 +134,7 @@ class Assistant:
 
     def answer(self, question: str) -> AssistantReply:
         """Answer one customer message. Raises `guard.InvalidInput` and `LLMError`."""
-        question = guard.clean_input(question)
+        question = guard.redact_pii(guard.clean_input(question))
         chunks = self._index.search(question)
         evidence = guard.Evidence(
             chunks={chunk.id: chunk for chunk in chunks},

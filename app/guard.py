@@ -63,6 +63,33 @@ def clean_output(text: str) -> str:
     return _visible(text, "NFKC")
 
 
+# --- personal data -----------------------------------------------------------
+
+PII_PLACEHOLDER = "[dado pessoal removido]"
+_EMAIL = re.compile(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+")
+# Phone numbers, Pix keys, CPF/CNPJ, cards, CEP: digits joined by separators.
+_DIGIT_RUN = re.compile(r"\d(?:[\W_]{0,3}\d)+")
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text)
+
+
+def redact_pii(text: str) -> str:
+    """Mask e-mails and long digit sequences before the text leaves the server.
+
+    The model provider is a third party, and the assistant never needs a CPF,
+    phone, card or CEP to answer. Names and street addresses are not detected.
+    """
+    text = _EMAIL.sub(PII_PLACEHOLDER, text)
+    return _DIGIT_RUN.sub(
+        lambda run: (
+            PII_PLACEHOLDER if len(_digits(run.group())) >= MIN_LONG_NUMBER_DIGITS else run.group()
+        ),
+        text,
+    )
+
+
 # --- envelopes ---------------------------------------------------------------
 
 
@@ -146,8 +173,6 @@ def leaks_prompt(text: str, system_prompt: str, canary: str) -> bool:
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 _THOUSANDS = re.compile(r"\d{1,3}(?:\.\d{3})+")
 _CODE = re.compile(r"[a-z0-9]+")
-# Phone numbers, Pix keys, CPF/CNPJ, bank accounts: digits joined by separators.
-_DIGIT_RUN = re.compile(r"\d(?:[\W_]{0,3}\d)+")
 _SENSITIVE = re.compile(r"\b(?:senha|cvv|cpf|codigo de seguranca|(?:numero|dados) do cartao)\b")
 _UNAVAILABLE = re.compile(r"indisponi|esgotad|sem estoque|fora de estoque|em falta")
 
@@ -182,7 +207,7 @@ def extract_codes(text: str) -> set[str]:
 
 
 def _long_numbers(text: str) -> set[str]:
-    digits = (re.sub(r"\D", "", run) for run in _DIGIT_RUN.findall(text))
+    digits = (_digits(run) for run in _DIGIT_RUN.findall(text))
     return {number for number in digits if len(number) >= MIN_LONG_NUMBER_DIGITS}
 
 
