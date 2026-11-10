@@ -1,8 +1,9 @@
 """Deterministic checks around the model: input cleaning, data envelopes for
-untrusted content, output sanitizing and grounding validation.
+untrusted content, and review of the model's answer.
 
 Nothing here asks a model for an opinion. Each check is plain code, so it
-behaves the same no matter what the model was talked into.
+behaves the same no matter what the model was talked into. The answer review
+assumes the model is compromised and can emit any text it likes.
 """
 
 import html
@@ -11,41 +12,55 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Any
 
 from app.retrieval import Chunk, normalize
 
 MAX_INPUT_CHARS = 800
-MIN_LEAK_SENTENCE_CHARS = 40
-REMOVED_LINK = "[link removido]"
+MAX_ANSWER_CHARS = 1200
+LEAK_WINDOW_WORDS = 8
+MIN_LONG_NUMBER_DIGITS = 8
+MIN_CODE_CHARS = 4
 
 
 class InvalidInput(ValueError):
     """The customer message cannot be processed. The message is safe to show."""
 
 
-# --- input -------------------------------------------------------------------
+# --- cleaning ----------------------------------------------------------------
 
 
-def clean_input(text: str) -> str:
-    """Drop control and invisible characters, collapse whitespace, check size.
+def _visible(text: str, form: str) -> str:
+    """Normalize, drop invisible characters and collapse whitespace.
 
     Unicode category C covers control codes and also format characters
-    (zero-width, bidi overrides, tag characters) used to hide instructions.
+    (zero-width, bidi overrides, tag characters) used to hide text.
     """
-    text = unicodedata.normalize("NFC", text)
-    visible = "".join(
+    text = unicodedata.normalize(form, text)
+    kept = "".join(
         " " if ch.isspace() else ch
         for ch in text
         if ch.isspace() or unicodedata.category(ch)[0] != "C"
     )
-    cleaned = " ".join(visible.split())
+    return " ".join(kept.split())
+
+
+def clean_input(text: str) -> str:
+    cleaned = _visible(text, "NFC")
     if not cleaned:
         raise InvalidInput("A mensagem está vazia.")
     if len(cleaned) > MAX_INPUT_CHARS:
         raise InvalidInput(f"A mensagem passa de {MAX_INPUT_CHARS} caracteres.")
     return cleaned
+
+
+def clean_output(text: str) -> str:
+    """Same cleaning for the model's answer, before any check reads it.
+
+    NFKC also folds look-alikes such as fullwidth digits and "＄" into ASCII,
+    so "R＄ 5" cannot dodge the number checks.
+    """
+    return _visible(text, "NFKC")
 
 
 # --- envelopes ---------------------------------------------------------------
@@ -71,125 +86,132 @@ def wrap_customer_message(text: str) -> str:
     return f"<customer_message>\n{escape(text)}\n</customer_message>"
 
 
-# --- output ------------------------------------------------------------------
+# --- links -------------------------------------------------------------------
 
-# Case-insensitive on purpose: a chat widget that auto-links text would link
-# "EVIL.COM" too. The cost is that a typo like "fim.Depois" reads as a domain.
+_URL_BODY = r"[^\s<>\"')\]]+"
+_LABEL = r"[^\W_](?:[^\W_]|-)*"  # Unicode-aware, so "promoção.com" is a domain too
+# Case-insensitive on purpose: a chat widget that auto-links text links "EVIL.COM".
+# The cost is that a typo like "fim.Depois" reads as a domain.
 _LINK = re.compile(
-    r"(?:\b[a-z][a-z0-9+.-]*://|\bwww\.)[^\s<>\"')\]]+"  # scheme://... or www....
-    r"|\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b(?:/[^\s<>\"')\]]*)?",  # bare domain.tld/path
+    rf"(?:\b[a-z][a-z0-9+.-]*:)?//{_URL_BODY}"  # scheme://host or //host
+    rf"|\bwww\.{_URL_BODY}"
+    rf"|(?:{_LABEL}\.)+[^\W\d_]{{2,}}(?:/{_URL_BODY})?"  # bare domain.tld/path
+    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b",  # IPv4
     re.IGNORECASE,
 )
-_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_SCHEME = re.compile(r"^(?:[a-z][a-z0-9+.-]*:)?//", re.IGNORECASE)
 
 
 def _host(link: str) -> str:
-    authority = re.split(r"[/?#]", _SCHEME.sub("", link), maxsplit=1)[0]
+    # Browsers read "\" as "/" in http(s) URLs, so it ends the authority too.
+    authority = re.split(r"[/?#\\]", _SCHEME.sub("", link), maxsplit=1)[0]
     host = authority.rsplit("@", 1)[-1].split(":", 1)[0]
     return host.lower().strip(".")
 
 
-def _is_allowed(host: str, allowed_domains: Iterable[str]) -> bool:
-    return any(host == domain or host.endswith("." + domain) for domain in allowed_domains)
-
-
-def strip_external_links(text: str, allowed_domains: Iterable[str]) -> str:
-    """Replace every link whose host is not the store's (or a subdomain of it)."""
+def find_external_links(text: str, allowed_domains: Iterable[str]) -> list[str]:
+    """Links whose host is not the store's domain or a subdomain of it."""
     allowed = tuple(allowed_domains)
-    return _LINK.sub(
-        lambda match: match.group() if _is_allowed(_host(match.group()), allowed) else REMOVED_LINK,
-        text,
-    )
+    return [
+        link
+        for link in (match.group() for match in _LINK.finditer(text))
+        if not any(_host(link) == d or _host(link).endswith("." + d) for d in allowed)
+    ]
 
 
-def _squash(text: str) -> str:
-    return " ".join(normalize(text).split())
+# --- prompt leak -------------------------------------------------------------
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", normalize(text))
 
 
 def leaks_prompt(text: str, system_prompt: str, canary: str) -> bool:
-    """True when the output carries the canary or a full sentence of the system prompt."""
-    haystack = _squash(text)
-    if _squash(canary) in haystack:
+    """True when the text carries the canary or a run of words copied from the prompt.
+
+    Punctuation, case and accents are ignored, so re-punctuating the prompt
+    does not hide it.
+    """
+    words = _words(text)
+    if "".join(_words(canary)) in "".join(words):
         return True
-    sentences = re.split(r"(?<=[.!?:])\s+|\n+", system_prompt)
-    return any(
-        len(sentence) >= MIN_LEAK_SENTENCE_CHARS and _squash(sentence) in haystack
-        for sentence in sentences
-    )
+    prompt_words = _words(system_prompt)
+    size = LEAK_WINDOW_WORDS
+    windows = {tuple(prompt_words[i : i + size]) for i in range(len(prompt_words) - size + 1)}
+    return any(tuple(words[i : i + size]) in windows for i in range(len(words) - size + 1))
 
 
 # --- grounding ---------------------------------------------------------------
 
-_NUMBER = r"(?:\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)"
-_MONEY = re.compile(rf"R\$\s*({_NUMBER})|(?<![\d.,])({_NUMBER})\s*reais\b", re.IGNORECASE)
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 _THOUSANDS = re.compile(r"\d{1,3}(?:\.\d{3})+")
-_CENTS = Decimal("0.01")
-
-# Runs on normalized text (lowercase, no accents). Captures "7 dias",
-# "3 a 5 dias", "10%", "3x", "24h".
-_QUANTITY = re.compile(
-    r"(\d+)(?:\s*(?:a|e|ou|-|–)\s*(\d+))?\s*"
-    r"(%|x\b|vezes\b|h\b|horas?\b|dias?\b|semanas?\b|mes(?:es)?\b|minutos?\b|segundos?\b|anos?\b)"
-)
-_UNITS = {"vezes": "x", "h": "hora", "meses": "mes", "mes": "mes"}
-
-# Phone numbers, Pix keys, CPF/CNPJ, bank accounts: 8+ digits, separators allowed.
-_LONG_NUMBER = re.compile(r"\d[\d\s().\-/]{6,}\d")
-MIN_LONG_NUMBER_DIGITS = 8
+_CODE = re.compile(r"[a-z0-9]+")
+# Phone numbers, Pix keys, CPF/CNPJ, bank accounts: digits joined by separators.
+_DIGIT_RUN = re.compile(r"\d(?:[\W_]{0,3}\d)+")
+_SENSITIVE = re.compile(r"\b(?:senha|cvv|cpf|codigo de seguranca|(?:numero|dados) do cartao)\b")
+_UNAVAILABLE = re.compile(r"indisponi|esgotad|sem estoque|fora de estoque|em falta")
 
 
-def parse_brl(raw: str) -> Decimal:
-    """'59,90', '59.90', '1.299,00' and '1.299' as Decimal with two places."""
+def canonical_number(raw: str) -> str:
+    """One spelling per value: '59,90', '59.90' and '59.9' -> '59.9'; '1.299,00' -> '1299'."""
     if "," in raw:
-        raw = raw.replace(".", "").replace(",", ".")
+        candidate = raw.replace(".", "").replace(",", ".")
     elif _THOUSANDS.fullmatch(raw):
-        raw = raw.replace(".", "")
-    return Decimal(raw).quantize(_CENTS)
+        candidate = raw.replace(".", "")
+    else:
+        candidate = raw
+    integer, _, fraction = candidate.partition(".")
+    if not integer.isdigit() or (fraction and not fraction.isdigit()):  # e.g. "1.2.3"
+        return re.sub(r"\D", "", raw)
+    integer, fraction = integer.lstrip("0") or "0", fraction.rstrip("0")
+    return f"{integer}.{fraction}" if fraction else integer
 
 
-def extract_prices(text: str) -> set[Decimal]:
-    return {parse_brl(a or b) for a, b in _MONEY.findall(text)}
+def extract_numbers(text: str) -> set[str]:
+    """Every number in the text, whatever unit or currency sign is next to it."""
+    return {canonical_number(raw) for raw in _NUMBER.findall(text)}
 
 
-def extract_quantities(text: str) -> set[tuple[int, str]]:
-    """(number, unit) pairs for durations, percentages and installments."""
-    found = set()
-    for first, second, unit in _QUANTITY.findall(normalize(text)):
-        unit = _UNITS.get(unit, unit if unit in "%x" else unit.rstrip("s"))
-        found.update((int(number), unit) for number in (first, second) if number)
-    return found
+def extract_codes(text: str) -> set[str]:
+    """Tokens mixing letters and digits, such as coupon codes ("BEMVINDA10")."""
+    return {
+        token
+        for token in _CODE.findall(normalize(text))
+        if len(token) >= MIN_CODE_CHARS and not token.isdigit() and not token.isalpha()
+    }
 
 
-def extract_long_numbers(text: str) -> set[str]:
-    """Digit strings that could be a contact or payment identifier."""
-    digits = (re.sub(r"\D", "", match) for match in _LONG_NUMBER.findall(text))
+def _long_numbers(text: str) -> set[str]:
+    digits = (re.sub(r"\D", "", run) for run in _DIGIT_RUN.findall(text))
     return {number for number in digits if len(number) >= MIN_LONG_NUMBER_DIGITS}
+
+
+def has_unknown_long_number(text: str, evidence_texts: Iterable[str]) -> bool:
+    """A phone/Pix/document-like number that the evidence does not contain."""
+    known = set().union(*(_long_numbers(evidence) for evidence in evidence_texts))
+    for number in known:  # blank out the known ones, whatever separators were used
+        text = re.sub(r"[\W_]{0,3}".join(number), " ", text)
+    return any(not any(number in other for other in known) for number in _long_numbers(text))
+
+
+def mentions_unavailability(text: str) -> bool:
+    return bool(_UNAVAILABLE.search(normalize(text)))
 
 
 @dataclass
 class Evidence:
-    """Everything the model was shown for one question. Nothing else may be claimed."""
+    """What the model was shown for one question. Nothing else may be claimed."""
 
     chunks: dict[str, Chunk] = field(default_factory=dict)
     products: dict[str, dict[str, Any]] = field(default_factory=dict)  # public views
-    tool_texts: list[str] = field(default_factory=list)
     store_facts: tuple[str, ...] = ()  # always true, e.g. the human contact
 
-    def texts(self) -> list[str]:
-        chunk_texts = [f"{chunk.title}\n{chunk.text}" for chunk in self.chunks.values()]
-        return [*chunk_texts, *self.tool_texts, *self.store_facts]
-
-    def prices(self) -> set[Decimal]:
-        from_products = {
-            Decimal(str(view["price"])).quantize(_CENTS) for view in self.products.values()
-        }
-        return from_products.union(*(extract_prices(text) for text in self.texts()))
-
-    def quantities(self) -> set[tuple[int, str]]:
-        return set().union(*(extract_quantities(text) for text in self.texts()))
-
-    def long_numbers(self) -> set[str]:
-        return set().union(*(extract_long_numbers(text) for text in self.texts()))
+    def cited_texts(self, citations: Iterable[str], products: Iterable[str]) -> list[str]:
+        """Only what the answer cites counts, so a number cannot be borrowed
+        from a neighbouring document or from another product."""
+        documents = [f"{self.chunks[i].title}\n{self.chunks[i].text}" for i in citations]
+        views = [json.dumps(self.products[i], ensure_ascii=False) for i in products]
+        return [*documents, *views, *self.store_facts]
 
 
 def validate_grounding(
@@ -202,11 +224,36 @@ def validate_grounding(
         return "unknown_product"
     if not citations and not products:
         return "no_evidence_cited"
-    if extract_prices(answer) - evidence.prices():
-        return "ungrounded_price"
-    if extract_quantities(answer) - evidence.quantities():
-        return "ungrounded_quantity"
-    if extract_long_numbers(answer) - evidence.long_numbers():
+    texts = evidence.cited_texts(citations, products)
+    if extract_numbers(answer) - set().union(*map(extract_numbers, texts)):
+        return "ungrounded_number"
+    if extract_codes(answer) - set().union(*map(extract_codes, texts)):
+        return "ungrounded_code"
+    if has_unknown_long_number(answer, texts):
         # A made-up phone or Pix key is a fraud vector, not just a wrong answer.
         return "ungrounded_contact"
+    sensitive = set(_SENSITIVE.findall(normalize(answer)))
+    if sensitive - set(_SENSITIVE.findall(normalize(" ".join(texts)))):
+        return "sensitive_request"
     return None
+
+
+def review_answer(
+    answer: str,
+    citations: list[str],
+    products: list[str],
+    evidence: Evidence,
+    allowed_domains: Iterable[str],
+    system_prompt: str,
+    canary: str,
+) -> str | None:
+    """Every check on an already cleaned answer. Returns the fallback reason, or None."""
+    if not answer:
+        return "empty_answer"
+    if "<" in answer or ">" in answer:
+        return "markup_in_answer"
+    if leaks_prompt(answer, system_prompt, canary):
+        return "prompt_leak"
+    if find_external_links(answer, allowed_domains):
+        return "external_link"
+    return validate_grounding(answer, citations, products, evidence)

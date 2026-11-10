@@ -1,3 +1,5 @@
+import pytest
+
 from app.catalog import public_view
 
 INTERNAL_PRODUCT = {
@@ -27,6 +29,12 @@ def test_public_view_never_leaks_numeric_stock_or_cost():
 
 def test_public_view_marks_zero_stock_as_unavailable():
     assert public_view({**INTERNAL_PRODUCT, "stock": 0})["in_stock"] is False
+
+
+@pytest.mark.parametrize("price", [None, "59,90"])
+def test_public_view_rejects_a_price_that_is_not_a_number(price):
+    with pytest.raises((TypeError, ValueError)):
+        public_view({**INTERNAL_PRODUCT, "price": price})
 
 
 def test_get_returns_product_or_none(catalog):

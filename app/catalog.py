@@ -15,14 +15,18 @@ NAME_WEIGHT = 2
 
 
 def public_view(product: dict[str, Any]) -> dict[str, Any]:
-    """Allowlist of fields. Numeric stock, cost and anything internal stay out."""
+    """Allowlist of fields. Numeric stock, cost and anything internal stay out.
+
+    Raises on a malformed product (e.g. a price that is not a number), so bad
+    catalog data becomes a tool error instead of reaching the model.
+    """
     return {
-        "id": product["id"],
-        "name": product["name"],
-        "price": product["price"],
+        "id": str(product["id"]),
+        "name": str(product["name"]),
+        "price": float(product["price"]),
         "in_stock": product.get("stock", 0) > 0,
-        "description": product.get("description", ""),
-        "url": product["url"],
+        "description": str(product.get("description", "")),
+        "url": str(product["url"]),
     }
 
 

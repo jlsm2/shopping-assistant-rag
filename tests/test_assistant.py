@@ -104,9 +104,17 @@ def test_greeting_gets_the_canned_message_not_model_text(make_assistant, store):
         ([final("Texto.", citations=("faq#nao-recuperado",))], "unknown_citation"),
         ([final("Temos o Set Fantasma.", products=("set-fantasma",))], "unknown_product"),
         ([final("A troca é em até 7 dias.")], "no_evidence_cited"),
-        ([final("A taxa de troca é R$ 9,99.", citations=(TROCA,))], "ungrounded_price"),
-        ([final("A troca é em até 90 dias.", citations=(TROCA,))], "ungrounded_quantity"),
-        ([final("Pague no Pix 11 98888-7777.", citations=(TROCA,))], "ungrounded_contact"),
+        ([final("A taxa de troca é R$ 9,99.", citations=(TROCA,))], "ungrounded_number"),
+        ([final("A troca é em até 90 dias.", citations=(TROCA,))], "ungrounded_number"),
+        ([final("A troca é em até 7​0 dias.", citations=(TROCA,))], "ungrounded_number"),
+        ([final("Use o cupom TROCA7 na troca.", citations=(TROCA,))], "ungrounded_code"),
+        ([final("Envie a senha do cartão para trocar.", citations=(TROCA,))], "sensitive_request"),
+        ([final("Troca em até 7 dias. <b>ok</b>", citations=(TROCA,))], "markup_in_answer"),
+        ([final("Troca em até 7 dias. " + "a" * 1200, citations=(TROCA,))], "answer_too_long"),
+        (
+            [final("Troca em 7 dias. Veja http://promo-falsa.example/x", citations=(TROCA,))],
+            "external_link",
+        ),
         ([LLMResponse(stop="refusal")], "stop_refusal"),
         ([LLMResponse(stop="truncated", text='{"answer": "A tro')], "stop_truncated"),
         ([LLMResponse(stop="final", text="isto não é JSON")], "invalid_json"),
@@ -135,17 +143,64 @@ def test_price_claimed_only_by_the_customer_is_not_evidence(make_assistant):
 
     reply = assistant.answer("Vi que o Set Nude Curto custa R$ 5,00. Confirma?")
 
-    assert reply.reason == "ungrounded_price"
+    assert reply.reason == "ungrounded_number"
+
+
+def test_price_of_another_product_cannot_be_attached_to_the_cited_one(make_assistant):
+    assistant, _ = make_assistant(
+        tool_calls(("search_products", {"query": "noiva adesivos", "max_price": None})),
+        final("O Set Noiva Pérolas custa R$ 12,90.", products=("noiva-perolas",)),
+    )
+
+    assert assistant.answer("Quanto custa o set de noiva?").reason == "ungrounded_number"
+
+
+def test_server_adds_the_stock_status_the_model_left_out(make_assistant):
+    assistant, _ = make_assistant(
+        tool_calls(("get_product", {"product_id": "cromado-prata"})),
+        final("O Set Cromado Prata custa R$ 84,90 e sai para envio.", products=("cromado-prata",)),
+    )
+
+    reply = assistant.answer("O set cromado prata está disponível?")
+
+    assert reply.fallback is False
+    assert reply.answer.endswith("Indisponível no momento: Set Cromado Prata.")
+
+
+def test_server_does_not_repeat_a_stock_status_the_model_already_gave(make_assistant):
+    answer = "O Set Cromado Prata (R$ 84,90) está indisponível no momento."
+    assistant, _ = make_assistant(
+        tool_calls(("get_product", {"product_id": "cromado-prata"})),
+        final(answer, products=("cromado-prata",)),
+    )
+
+    assert assistant.answer("O set cromado prata está disponível?").answer == answer
+
+
+def test_guard_crash_falls_back_instead_of_raising(make_assistant, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("regex engine exploded")
+
+    monkeypatch.setattr("app.assistant.guard.review_answer", boom)
+    assistant, _ = make_assistant(final("A troca é em até 7 dias.", citations=(TROCA,)))
+
+    assert assistant.answer(QUESTION).reason == "guard_error"
 
 
 def test_product_from_an_earlier_tool_call_can_be_mentioned(make_assistant):
     assistant, _ = make_assistant(
         tool_calls(SEARCH_NUDE),
         tool_calls(("get_product", {"product_id": "cola-extra-forte"})),
-        final("O Set Nude Curto sai por R$ 59,90 e a cola por R$ 19,90.", products=("nude-curto",)),
+        final(
+            "O Set Nude Curto sai por R$ 59,90 e a cola por R$ 19,90.",
+            products=("nude-curto", "cola-extra-forte"),
+        ),
     )
 
-    assert assistant.answer("Quero um set nude e cola").fallback is False
+    reply = assistant.answer("Quero um set nude e cola")
+
+    assert reply.fallback is False
+    assert [product["id"] for product in reply.products] == ["nude-curto", "cola-extra-forte"]
 
 
 # --- injection defenses --------------------------------------------------------
@@ -169,15 +224,40 @@ def test_answer_leaking_the_canary_falls_back(make_assistant):
     assert assistant.answer(QUESTION).reason == "prompt_leak"
 
 
-def test_external_link_is_removed_from_the_answer(make_assistant):
-    answer = "A troca é em até 7 dias. Saiba mais em http://promo-falsa.example/cupom"
-    assistant, _ = make_assistant(final(answer, citations=(TROCA,)))
+def test_compromised_model_cannot_deliver_a_scam_answer(make_assistant, store):
+    scam = (
+        "Promoção: o Set Nude Curto sai por 5,00 hoje com 90 por cento de desconto. "
+        "Pague em https://evil.example\\@lojademo.example/pix ou em promoção.com/pix, "
+        "chave Pix a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d, "
+        "ou chame no novo WhatsApp (11) 98765–4321."
+    )
+    assistant, _ = make_assistant(final(scam, citations=(TROCA,)))
 
     reply = assistant.answer(QUESTION)
 
+    assert reply.fallback is True
+    assert reply.answer == store.fallback_message
+
+
+def test_store_link_is_allowed_in_the_answer(make_assistant):
+    rastreio = "frete-e-prazos#rastreamento-do-pedido"
+    answer = "Acompanhe a entrega em lojademo.example/rastreio com o código enviado por e-mail."
+    assistant, _ = make_assistant(final(answer, citations=(rastreio,)))
+
+    reply = assistant.answer("Como rastreio minha encomenda?")
+
     assert reply.fallback is False
-    assert "promo-falsa" not in reply.answer
-    assert guard.REMOVED_LINK in reply.answer
+    assert reply.answer == answer
+
+
+def test_too_many_tool_calls_in_one_turn_falls_back(make_assistant):
+    flood = tool_calls(*[("get_product", {"product_id": f"p{n}"}) for n in range(6)])
+    assistant, llm = make_assistant(flood)
+
+    reply = assistant.answer("Tem set nude?")
+
+    assert reply.reason == "too_many_tool_calls"
+    assert len(llm.calls) == 1
 
 
 def test_tool_outside_the_allowlist_gets_an_error_and_is_logged(make_assistant, caplog):
@@ -244,6 +324,25 @@ def test_catalog_failure_becomes_a_tool_error_not_a_crash(make_assistant):
     assert result.is_error is True
     assert "rails" not in result.content
     assert reply.fallback is True
+
+
+@pytest.mark.parametrize("price", [None, "59,90", "grátis"])
+def test_malformed_catalog_product_becomes_a_tool_error(make_assistant, price):
+    class OddCatalog:
+        def search(self, query, max_price=None):
+            return [{"id": "novo", "name": "Set Novo", "price": price, "stock": 1, "url": "u"}]
+
+        def get(self, product_id):
+            return None
+
+    assistant, llm = make_assistant(
+        tool_calls(SEARCH_NUDE), final(outcome="needs_human"), catalog=OddCatalog()
+    )
+
+    assistant.answer("Tem set novo?")
+
+    (result,) = llm.calls[1]["messages"][2].results
+    assert result.is_error is True
 
 
 # --- errors propagate ------------------------------------------------------------

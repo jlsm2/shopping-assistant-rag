@@ -3,7 +3,6 @@
 Single-turn on purpose: history sent by the client could forge assistant turns.
 """
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -30,6 +29,7 @@ from app.retrieval import Chunk, Index
 logger = logging.getLogger(__name__)
 
 MAX_PRODUCT_RESULTS = 5
+MAX_TOOL_CALLS_PER_TURN = 5
 
 ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -155,6 +155,8 @@ class Assistant:
                 break
             if iteration == self._max_tool_iterations:
                 return self._fallback("tool_iteration_limit", usage)
+            if len(response.tool_calls) > MAX_TOOL_CALLS_PER_TURN:
+                return self._fallback("too_many_tool_calls", usage)
             results = tuple(self._run_tool(call, evidence) for call in response.tool_calls)
             messages += [AssistantMessage(response), ToolMessage(results)]
 
@@ -170,20 +172,35 @@ class Assistant:
         if parsed.outcome == "smalltalk":
             # Canned text: a greeting never carries model-written claims.
             return AssistantReply(answer=self._store.greeting_message, usage=usage)
-        if guard.leaks_prompt(parsed.answer, self._system_prompt, CANARY):
-            return self._fallback("prompt_leak", usage)
-        reason = guard.validate_grounding(
-            parsed.answer, parsed.citations, parsed.products, evidence
-        )
+        if len(parsed.answer) > guard.MAX_ANSWER_CHARS:
+            return self._fallback("answer_too_long", usage)
+        try:
+            answer = guard.clean_output(parsed.answer)
+            reason = guard.review_answer(
+                answer,
+                parsed.citations,
+                parsed.products,
+                evidence,
+                self._store.allowed_domains,
+                self._system_prompt,
+                CANARY,
+            )
+        except Exception:
+            # A guard that crashes must fail closed, not become a 500 or a pass.
+            logger.exception("guard_failed")
+            reason = "guard_error"
         if reason:
             return self._fallback(reason, usage)
-        answer = guard.strip_external_links(parsed.answer, self._store.allowed_domains).strip()
-        if not answer:
-            return self._fallback("empty_answer", usage)
+
+        products = tuple(evidence.products[i] for i in dict.fromkeys(parsed.products))
+        sold_out = [product["name"] for product in products if not product["in_stock"]]
+        if sold_out and not guard.mentions_unavailability(answer):
+            # Server-written, so stock is right even if the model glossed over it.
+            answer += f" Indisponível no momento: {', '.join(sold_out)}."
         return AssistantReply(
             answer=answer,
             sources=tuple(evidence.chunks[i] for i in dict.fromkeys(parsed.citations)),
-            products=tuple(evidence.products[i] for i in dict.fromkeys(parsed.products)),
+            products=products,
             usage=usage,
         )
 
@@ -211,7 +228,6 @@ class Assistant:
             logger.exception("tool_failed name=%s", call.name)
             return ToolResult(call.id, "Catálogo indisponível no momento.", is_error=True)
         evidence.products.update({view["id"]: view for view in views})
-        evidence.tool_texts.append(json.dumps(payload, ensure_ascii=False))
         return ToolResult(call.id, guard.wrap_tool_data(payload))
 
     def _fallback(self, reason: str, usage: Usage) -> AssistantReply:
