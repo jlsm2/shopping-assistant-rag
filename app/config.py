@@ -22,8 +22,12 @@ class Settings:
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     rate_limit_per_minute: int = 20
     service_tokens: tuple[str, ...] = ()  # more than one only while rotating
+    daily_token_budget: int = 2_000_000  # LLM tokens (input + output) per UTC day
+    llm_timeout_seconds: float = 30.0  # for one question, tool rounds included
 
     def __post_init__(self) -> None:
+        if self.daily_token_budget < 1 or self.llm_timeout_seconds <= 0:
+            raise ValueError("DAILY_TOKEN_BUDGET and LLM_TIMEOUT_SECONDS must be positive")
         if any(len(token) < MIN_SERVICE_TOKEN_CHARS for token in self.service_tokens):
             raise ValueError(
                 f"each SERVICE_TOKENS entry needs at least {MIN_SERVICE_TOKEN_CHARS} characters"
@@ -52,6 +56,10 @@ class Settings:
                 env.get("RATE_LIMIT_PER_MINUTE") or default.rate_limit_per_minute
             ),
             service_tokens=_csv(env.get("SERVICE_TOKENS", "")),
+            daily_token_budget=int(env.get("DAILY_TOKEN_BUDGET") or default.daily_token_budget),
+            llm_timeout_seconds=float(
+                env.get("LLM_TIMEOUT_SECONDS") or default.llm_timeout_seconds
+            ),
         )
 
 

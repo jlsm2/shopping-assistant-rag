@@ -17,6 +17,10 @@ What an adapter must guarantee, because the security model depends on it:
   back unchanged on the next request of the same tool loop.
 - Provider errors are translated to the `LLMError` family below; their
   messages are never shown to the end user.
+- `timeout` (seconds left for this question) is a hard limit for the whole
+  call, SDK retries included; going over it raises `LLMUnavailable`.
+- Output tokens are capped per call, and `LLMResponse.usage` reports what the
+  provider billed, because the daily spend ceiling is counted from it.
 """
 
 from collections.abc import Sequence
@@ -110,4 +114,5 @@ class LLMClient(Protocol):
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
         response_schema: dict[str, Any],
+        timeout: float,
     ) -> LLMResponse: ...

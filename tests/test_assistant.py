@@ -2,7 +2,15 @@ import pytest
 
 from app import guard
 from app.assistant import ANSWER_SCHEMA, TOOLS
-from app.llm import AssistantMessage, LLMResponse, LLMUnavailable, ToolMessage, UserMessage
+from app.budget import TokenBudget
+from app.llm import (
+    AssistantMessage,
+    LLMResponse,
+    LLMUnavailable,
+    ToolMessage,
+    Usage,
+    UserMessage,
+)
 from app.prompts import CANARY
 from tests.fakes import final, tool_calls
 
@@ -357,6 +365,59 @@ def test_malformed_catalog_product_becomes_a_tool_error(make_assistant, price):
 
     (result,) = llm.calls[1]["messages"][2].results
     assert result.is_error is True
+
+
+# --- spend ceiling and deadline --------------------------------------------------
+
+
+def test_exhausted_budget_falls_back_without_calling_the_model(make_assistant):
+    budget = TokenBudget(daily_limit=100)
+    budget.spend(Usage(100, 0))
+    assistant, llm = make_assistant(final("Em até 7 dias.", citations=(TROCA,)), budget=budget)
+
+    reply = assistant.answer(QUESTION)
+
+    assert reply.reason == "budget_exhausted"
+    assert llm.calls == []
+
+
+def test_every_model_call_is_charged_to_the_budget(make_assistant):
+    budget = TokenBudget(daily_limit=10_000)
+    assistant, _ = make_assistant(
+        tool_calls(SEARCH_NUDE),
+        final("O Set Nude Curto custa R$ 59,90.", products=("nude-curto",)),
+        budget=budget,
+    )
+
+    assistant.answer("Tem set nude?")
+
+    assert budget.used() == 110 + 120  # one tool round plus the final answer
+
+
+def test_question_stops_at_the_deadline_and_passes_the_time_left_to_each_call(make_assistant):
+    now = [0.0]
+
+    def slow_search(*args, **kwargs):
+        now[0] += 20.0  # the catalog (or the previous model call) ate most of the time
+        return []
+
+    class SlowCatalog:
+        search = staticmethod(slow_search)
+        get = staticmethod(slow_search)
+
+    assistant, llm = make_assistant(
+        tool_calls(SEARCH_NUDE),
+        tool_calls(SEARCH_NUDE),
+        final(outcome="needs_human"),
+        catalog=SlowCatalog(),
+        timeout_seconds=30.0,
+        clock=lambda: now[0],
+    )
+
+    reply = assistant.answer("Tem set nude?")
+
+    assert [call["timeout"] for call in llm.calls] == [30.0, 10.0]
+    assert reply.reason == "deadline_exceeded"
 
 
 # --- errors propagate ------------------------------------------------------------

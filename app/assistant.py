@@ -4,12 +4,15 @@ Single-turn on purpose: history sent by the client could forge assistant turns.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import guard
+from app.budget import TokenBudget
 from app.catalog import Catalog, public_view
 from app.config import Store
 from app.llm import (
@@ -25,6 +28,7 @@ from app.llm import (
 )
 from app.prompts import CANARY, build_system_prompt
 from app.retrieval import Chunk, Index
+from app.telemetry import request_id
 
 logger = logging.getLogger(__name__)
 
@@ -124,12 +128,18 @@ class Assistant:
         catalog: Catalog,
         store: Store,
         max_tool_iterations: int = 4,
+        timeout_seconds: float = 30.0,
+        budget: TokenBudget | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._llm = llm
         self._index = index
         self._catalog = catalog
         self._store = store
         self._max_tool_iterations = max_tool_iterations
+        self._timeout_seconds = timeout_seconds
+        self.budget = budget
+        self._clock = clock
         self._system_prompt = build_system_prompt(store.name)
 
     def answer(self, question: str) -> AssistantReply:
@@ -142,15 +152,25 @@ class Assistant:
         )
         messages: list[Message] = [UserMessage(_render_user_turn(chunks, question))]
         usage = Usage()
+        if self.budget and self.budget.exhausted():
+            # Out of money for today: still point the customer to a human.
+            return self._fallback("budget_exhausted", usage)
+        deadline = self._clock() + self._timeout_seconds
 
         for iteration in range(self._max_tool_iterations + 1):
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                return self._fallback("deadline_exceeded", usage)
             response = self._llm.complete(
                 system=self._system_prompt,
                 messages=messages,
                 tools=TOOLS,
                 response_schema=ANSWER_SCHEMA,
+                timeout=remaining,
             )
             usage += response.usage
+            if self.budget:
+                self.budget.spend(response.usage)
             if response.stop != "tool_calls":
                 break
             if iteration == self._max_tool_iterations:
@@ -187,7 +207,7 @@ class Assistant:
             )
         except Exception:
             # A guard that crashes must fail closed, not become a 500 or a pass.
-            logger.exception("guard_failed")
+            logger.exception("guard_failed request_id=%s", request_id.get())
             reason = "guard_error"
         if reason:
             return self._fallback(reason, usage)
@@ -207,12 +227,20 @@ class Assistant:
     def _run_tool(self, call: ToolCall, evidence: guard.Evidence) -> ToolResult:
         input_model = TOOL_INPUTS.get(call.name)
         if input_model is None:
-            logger.warning("tool_rejected reason=not_allowed name=%.40r", call.name)
+            logger.warning(
+                "tool_rejected request_id=%s reason=not_allowed name=%.40r",
+                request_id.get(),
+                call.name,
+            )
             return ToolResult(call.id, "Ferramenta inexistente.", is_error=True)
         try:
             arguments = input_model.model_validate(call.arguments)
         except ValidationError:
-            logger.warning("tool_rejected reason=invalid_input name=%s", call.name)
+            logger.warning(
+                "tool_rejected request_id=%s reason=invalid_input name=%s",
+                request_id.get(),
+                call.name,
+            )
             return ToolResult(call.id, "Parâmetros inválidos.", is_error=True)
         try:
             if isinstance(arguments, SearchProductsInput):
@@ -225,14 +253,14 @@ class Assistant:
                 payload = views[0] if views else {"error": "not_found"}
         except Exception:
             # A future HttpCatalog can fail; the model gets an error, not a crash.
-            logger.exception("tool_failed name=%s", call.name)
+            logger.exception("tool_failed request_id=%s name=%s", request_id.get(), call.name)
             return ToolResult(call.id, "Catálogo indisponível no momento.", is_error=True)
         evidence.products.update({view["id"]: view for view in views})
         return ToolResult(call.id, guard.wrap_tool_data(payload))
 
     def _fallback(self, reason: str, usage: Usage) -> AssistantReply:
         # The customer message is deliberately not logged.
-        logger.info("fallback reason=%s", reason)
+        logger.info("fallback request_id=%s reason=%s", request_id.get(), reason)
         return AssistantReply(
             answer=self._store.fallback_message, fallback=True, reason=reason, usage=usage
         )

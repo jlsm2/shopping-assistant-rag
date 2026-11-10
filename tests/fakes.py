@@ -13,13 +13,14 @@ class FakeLLM:
         self.script = list(script)
         self.calls: list[dict[str, Any]] = []
 
-    def complete(self, *, system, messages, tools, response_schema) -> LLMResponse:
+    def complete(self, *, system, messages, tools, response_schema, timeout) -> LLMResponse:
         self.calls.append(
             {
                 "system": system,
                 "messages": list(messages),
                 "tools": tools,
                 "response_schema": response_schema,
+                "timeout": timeout,
             }
         )
         step = self.script.pop(0)
