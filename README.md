@@ -207,7 +207,7 @@ uvicorn app.api:app
 
 O `.env` da pasta atual é lido automaticamente pela API e pelo eval. Uma variável já definida no ambiente tem prioridade sobre o arquivo, e `ENV_FILE` aponta para outro caminho se precisar.
 
-Configuração por variáveis de ambiente (ver `.env.example`): `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` e `SERVICE_TOKENS` (obrigatórias), `LLM_BASE_URL`, `LLM_EFFORT`, `LLM_MAX_TOKENS`, `LLM_REFUSAL_FALLBACK`, `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
+Configuração por variáveis de ambiente (ver `.env.example`): `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` e `SERVICE_TOKENS` (obrigatórias), `LLM_BASE_URL`, `LLM_EFFORT`, `LLM_MAX_TOKENS`, `LLM_REFUSAL_FALLBACK`, `LLM_SCHEMA_WITH_TOOLS`, `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera um SERVICE_TOKENS
@@ -228,6 +228,7 @@ Nada sobre o modelo de IA está fixo no código. Provedor, chave, endereço da A
 | `LLM_EFFORT` | vazio (não envia) | Esforço de raciocínio, se o modelo tiver esse controle |
 | `LLM_MAX_TOKENS` | `4096` | Teto de tokens de saída por chamada, incluindo o raciocínio |
 | `LLM_REFUSAL_FALLBACK` | `true` | Só Anthropic: se o modelo recusar por um filtro de segurança, a própria API refaz a chamada no modelo que ela recomenda para o caso |
+| `LLM_SCHEMA_WITH_TOOLS` | `true` | Só `openai`: `false` para APIs que recusam ferramentas e schema na mesma chamada, como o Groq. O adaptador pede primeiro com as ferramentas e, quando o modelo termina, impõe o schema numa chamada sem elas |
 
 A chave também pode vir da variável própria de cada SDK (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Ela é lida do ambiente e nunca entra no objeto de configuração, para não aparecer em logs.
 
@@ -244,11 +245,18 @@ LLM_PROVIDER=openai
 LLM_MODEL=<id do modelo>
 LLM_API_KEY=<sua chave>
 
-# Serviço compatível com o formato da OpenAI (Gemini, Groq, OpenRouter...)
+# Serviço compatível com o formato da OpenAI (Gemini, OpenRouter...)
 LLM_PROVIDER=openai
 LLM_BASE_URL=<endereço da API do serviço>
 LLM_MODEL=<id do modelo>
 LLM_API_KEY=<sua chave>
+
+# Groq (testado em 2026-11-10 com openai/gpt-oss-120b)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=openai/gpt-oss-120b
+LLM_API_KEY=<sua chave gsk_...>
+LLM_SCHEMA_WITH_TOOLS=false
 
 # Modelo local, sem custo (LM Studio; no Ollama a porta é 11434)
 LLM_PROVIDER=openai
@@ -280,7 +288,7 @@ O que cada adaptador envia:
 
 Nenhum dos dois envia `temperature` nem força a escolha de ferramenta.
 
-**Limite do que foi testado:** os dois adaptadores foram exercitados com o SDK real de cada provedor sobre uma rede simulada, em uma conversa completa com chamada de ferramenta. Nenhum foi executado contra uma API de verdade. Serviços "compatíveis" variam: algum pode rejeitar `strict`, `max_completion_tokens` ou `json_schema`. Se isso acontecer, o erro do provedor aparece no log do servidor (a cliente só vê uma mensagem genérica).
+**Limite do que foi testado:** os dois adaptadores foram exercitados com o SDK real de cada provedor sobre uma rede simulada, em uma conversa completa com chamada de ferramenta. Contra uma API de verdade, só o adaptador `openai` rodou, no Groq, com algumas perguntas avulsas (o eval completo ainda não). No plano gratuito do Groq o gpt-oss-120b tem 8.000 tokens por minuto, e cada pergunta gasta de 1.500 a 5.000: dá para desenvolver e testar, não para atender uma loja. Serviços "compatíveis" variam: algum pode rejeitar `strict`, `max_completion_tokens` ou `json_schema`. Se isso acontecer, o erro do provedor aparece no log do servidor (a cliente só vê uma mensagem genérica).
 
 Trocar de modelo muda custo e qualidade, então rode o eval de novo a cada troca, passando o preço do modelo com `--price-in` e `--price-out` para ver o custo da execução.
 
