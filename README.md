@@ -4,7 +4,7 @@ Assistente de compras com IA para e-commerce: responde dúvidas sobre políticas
 
 É genérico (qualquer loja troca os arquivos em `data/`). Os dados de exemplo são de uma loja fictícia de unhas postiças, a "Loja Demo".
 
-> **Estado atual:** todo o pipeline está implementado e testado offline, mas o **provedor de LLM ainda não foi escolhido**. O assistente fala com uma interface neutra (`app/llm.py`); falta escrever um adaptador para a API escolhida. Até lá a API não sobe (falha no startup com uma mensagem clara) e o eval completo não roda. Veja [Conectar o provedor de LLM](#conectar-o-provedor-de-llm).
+> **Estado atual:** o pipeline está implementado e testado offline, com adaptador para a API da Anthropic (Claude). O modelo é configurável pelo `.env`. O eval completo ainda **não foi executado com um modelo real**, então as métricas que dependem dele estão marcadas como pendentes. Veja [Provedor de LLM](#provedor-de-llm).
 
 ## Exemplo
 
@@ -55,6 +55,7 @@ flowchart TD
 | `app/prompts.py` | System prompt estável, com frase-canário |
 | `app/assistant.py` | Orquestração: busca, loop de ferramentas, validação |
 | `app/llm.py` | Interface neutra de LLM (`LLMClient`) e seus tipos |
+| `app/anthropic_llm.py` | Adaptador da API da Anthropic. Único módulo que importa o SDK do provedor |
 | `app/api.py` | FastAPI: `POST /chat`, `GET /health`, `GET /metrics`, autenticação de serviço, rate limit, CORS |
 | `app/budget.py` | Teto diário de tokens |
 | `app/telemetry.py` | Id de requisição e métricas no formato do Prometheus |
@@ -176,7 +177,7 @@ O conjunto de avaliação (`evals/cases.jsonl`) tem 80 casos escritos à mão a 
 | Injection resistance | pendente | Casos de injection que caíram no fallback ou responderam certo à parte legítima, sem link externo, marcação, canário ou texto proibido |
 | Grounding block rate | pendente | Perguntas legítimas em que o modelo rascunhou algo sem evidência e a validação barrou |
 
-As linhas "pendente" dependem do provedor de LLM e serão preenchidas com a saída de `python -m evals.run_evals`. O único caso que a busca erra (`cuidado-04`, "Como tiro as unhas...") é um sinônimo que o BM25 não alcança ("tirar" contra "remover"); é o tipo de caso que a busca vetorial da v2 resolve.
+As linhas "pendente" dependem de rodar o eval com a chave do provedor (`python -m evals.run_evals`) e serão preenchidas com a saída dele. O único caso que a busca erra (`cuidado-04`, "Como tiro as unhas...") é um sinônimo que o BM25 não alcança ("tirar" contra "remover"); é o tipo de caso que a busca vetorial da v2 resolve.
 
 O avaliador do eval não reutiliza as checagens de `app/guard.py`: um ponto cego da guarda não pode ser também um ponto cego da nota. `tests/test_eval_cases.py` prova, para cada caso de injection, que uma resposta que obedece ao ataque é reprovada.
 
@@ -198,13 +199,13 @@ pip install -e ".[dev]"
 pytest --cov=app          # testes offline, sem rede
 ruff check . && ruff format --check .
 
-cp .env.example .env      # preencha SERVICE_TOKENS; o .env nunca vai para o git
-uvicorn app.api:app       # depende do adaptador de LLM
+cp .env.example .env      # preencha SERVICE_TOKENS e ANTHROPIC_API_KEY; o .env nunca vai para o git
+uvicorn app.api:app
 ```
 
 O `.env` da pasta atual é lido automaticamente pela API e pelo eval. Uma variável já definida no ambiente tem prioridade sobre o arquivo, e `ENV_FILE` aponta para outro caminho se precisar.
 
-Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` (obrigatória), `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
+Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` e `ANTHROPIC_API_KEY` (obrigatórias), `ASSISTANT_MODEL`, `ASSISTANT_EFFORT`, `ASSISTANT_MAX_TOKENS`, `ASSISTANT_SERVER_FALLBACK`, `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera um SERVICE_TOKENS
@@ -212,11 +213,24 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"   # gera um SERVICE
 
 Em produção: sirva por HTTPS (o token vai no cabeçalho), mantenha o serviço em rede interna se possível e imponha o limite de tamanho de corpo também no proxy reverso.
 
-## Conectar o provedor de LLM
+## Provedor de LLM
 
-1. Implemente `app.llm.LLMClient` (um método, `complete`) para a API escolhida.
-2. Devolva o adaptador em `app.api.build_llm()`.
-3. Adicione a credencial no `.env` e o SDK nas dependências.
+O assistente usa a API da Anthropic (Claude) pelo SDK oficial. Crie a chave em `console.anthropic.com` e coloque em `ANTHROPIC_API_KEY` no `.env`. Sem a chave o servidor não sobe.
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `ASSISTANT_MODEL` | `claude-opus-5-5` | Qual modelo responde. Aceita qualquer id da API, por exemplo `claude-sonnet-5-5` ou `claude-haiku-5-5` |
+| `ASSISTANT_EFFORT` | `low` | Quanto o modelo raciocina antes de responder (`low`, `medium`, `high`, `xhigh`, `max`). Vazio não envia o parâmetro |
+| `ASSISTANT_MAX_TOKENS` | `4096` | Teto de tokens de saída por chamada, incluindo o raciocínio |
+| `ASSISTANT_SERVER_FALLBACK` | `true` | Se o modelo recusar por um filtro de segurança, a própria API refaz a chamada no modelo que a Anthropic recomenda para o caso. No `claude-haiku-5-5` não tem efeito |
+
+Trocar de modelo muda custo e qualidade, então rode o eval de novo a cada troca. Preços em novembro de 2026, por milhão de tokens de entrada e saída: Opus 5.5 US$ 4 e US$ 20; Sonnet 5.5 US$ 2 e US$ 10; Haiku 5.5 US$ 0,10 e US$ 0,50. Confira a página de preços da Anthropic antes de decidir, e passe os valores ao eval com `--price-in` e `--price-out` para ver o custo da execução.
+
+O que o adaptador envia: o prompt de sistema no canal `system`; as duas ferramentas com `strict: true`; a resposta final presa ao schema JSON por `output_config.format`; `tool_choice` no automático. Ele não envia `temperature` nem configuração de `thinking`, que os modelos atuais rejeitam.
+
+### Usar outro provedor
+
+O assistente só conhece a interface `app.llm.LLMClient` (um método, `complete`). Para trocar: escreva outro adaptador, devolva-o em `app.api.build_llm()` e acrescente o SDK às dependências. Nada mais muda.
 
 O adaptador precisa garantir o que a segurança pressupõe (está detalhado no docstring de `app/llm.py`): o `system` vai no canal de sistema do provedor; `response_schema` é imposto com saída estruturada; recusa de segurança vira `stop="refusal"` e corte por tokens vira `stop="truncated"`; erros do provedor viram `LLMRateLimited` / `LLMUnavailable` / `LLMError`, e a mensagem do provedor nunca chega à cliente. Para o teto de gasto valer, ele também precisa respeitar o `timeout` recebido em cada chamada (contando as retentativas do SDK), limitar os tokens de saída e devolver em `usage` o que o provedor cobrou.
 
