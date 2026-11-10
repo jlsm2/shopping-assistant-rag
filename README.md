@@ -198,9 +198,11 @@ pip install -e ".[dev]"
 pytest --cov=app          # testes offline, sem rede
 ruff check . && ruff format --check .
 
-cp .env.example .env
+cp .env.example .env      # preencha SERVICE_TOKENS; o .env nunca vai para o git
 uvicorn app.api:app       # depende do adaptador de LLM
 ```
+
+O `.env` da pasta atual é lido automaticamente pela API e pelo eval. Uma variável já definida no ambiente tem prioridade sobre o arquivo, e `ENV_FILE` aponta para outro caminho se precisar.
 
 Configuração por variáveis de ambiente (ver `.env.example`): `SERVICE_TOKENS` (obrigatória), `DAILY_TOKEN_BUDGET`, `LLM_TIMEOUT_SECONDS`, `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SCORE`, `MAX_TOOL_ITERATIONS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `DATA_DIR`.
 

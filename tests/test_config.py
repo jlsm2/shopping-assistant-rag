@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.config import DEFAULT_DATA_DIR, Settings, Store
+from app.config import DEFAULT_DATA_DIR, Settings, Store, load_env_file
 
 
 def test_settings_defaults_when_environment_is_empty(monkeypatch):
@@ -55,6 +55,61 @@ def test_settings_read_from_environment(monkeypatch):
 def test_settings_reject_unsafe_values(invalid):
     with pytest.raises(ValueError):
         Settings(**invalid)
+
+
+def test_load_env_file_reads_key_value_lines(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "﻿# comentário\n"  # Notepad on Windows writes a BOM
+        "\n"
+        "SERVICE_TOKENS=abc123\n"
+        '  QUOTED = "com aspas"  \n'
+        "SINGLE='x'\n"
+        "WITH_EQUALS=a=b=c\n"
+        "EMPTY=\n"
+        "linha sem igual\n"
+        "=sem chave\n",
+        encoding="utf-8",
+    )
+    environ: dict[str, str] = {}
+
+    load_env_file(env_file, environ)
+
+    assert environ == {
+        "SERVICE_TOKENS": "abc123",
+        "QUOTED": "com aspas",
+        "SINGLE": "x",
+        "WITH_EQUALS": "a=b=c",
+        "EMPTY": "",
+    }
+
+
+def test_load_env_file_never_overrides_a_real_environment_variable(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("RATE_LIMIT_PER_MINUTE=5\nNEW=1\n", encoding="utf-8")
+    environ = {"RATE_LIMIT_PER_MINUTE": "99"}
+
+    load_env_file(env_file, environ)
+
+    assert environ == {"RATE_LIMIT_PER_MINUTE": "99", "NEW": "1"}
+
+
+def test_load_env_file_ignores_a_missing_file(tmp_path):
+    environ: dict[str, str] = {}
+
+    load_env_file(tmp_path / "nao-existe.env", environ)
+
+    assert environ == {}
+
+
+def test_settings_from_env_reads_the_env_file(tmp_path, monkeypatch):
+    env_file = tmp_path / "loja.env"
+    env_file.write_text("RETRIEVAL_TOP_K=9\n", encoding="utf-8")
+    monkeypatch.setenv("ENV_FILE", str(env_file))
+    monkeypatch.setenv("RETRIEVAL_TOP_K", "placeholder")  # so the value is removed after the test
+    monkeypatch.delenv("RETRIEVAL_TOP_K")
+
+    assert Settings.from_env().retrieval_top_k == 9
 
 
 def test_store_fills_contact_and_name_into_the_fixed_messages():

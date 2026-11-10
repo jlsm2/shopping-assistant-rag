@@ -2,11 +2,28 @@
 
 import json
 import os
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MIN_SERVICE_TOKEN_CHARS = 32
+
+
+def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) -> None:
+    """Copy the KEY=VALUE lines of a .env file into the environment.
+
+    Real environment variables win, so a deployment can override the file.
+    # shortcut: no `export` prefix, inline comments or multi-line values;
+    # switch to python-dotenv if the file ever needs them
+    """
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8-sig").splitlines():  # -sig drops a Windows BOM
+        key, separator, value = line.strip().partition("=")
+        key = key.strip()
+        if separator and key and not key.startswith("#"):
+            environ.setdefault(key, value.strip().strip("\"'"))
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -41,6 +58,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        load_env_file(Path(os.environ.get("ENV_FILE", ".env")))
         env = os.environ
         default = cls()
         origins = env.get("CORS_ORIGINS")
