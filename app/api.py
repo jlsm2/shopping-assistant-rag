@@ -1,5 +1,6 @@
 """HTTP API: POST /chat and GET /health."""
 
+import ipaddress
 import logging
 import math
 import threading
@@ -9,6 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -70,13 +72,17 @@ class RateLimiter:
         self._window = window
         self._clock = clock
         self._hits: dict[str, deque[float]] = {}
+        self._last_prune = clock()
         self._lock = threading.Lock()
 
     def retry_after(self, key: str) -> float:
         """Record a hit. Returns 0 when allowed, else the seconds to wait."""
         now = self._clock()
         with self._lock:
-            if len(self._hits) > MAX_TRACKED_CLIENTS:
+            # At most one sweep per window, so a flood of keys cannot make every
+            # request pay for a full rebuild.
+            if len(self._hits) > MAX_TRACKED_CLIENTS and now - self._last_prune >= self._window:
+                self._last_prune = now
                 self._hits = {
                     k: hits for k, hits in self._hits.items() if now - hits[-1] < self._window
                 }
@@ -87,6 +93,17 @@ class RateLimiter:
                 return self._window - (now - hits[0])
             hits.append(now)
             return 0.0
+
+
+def client_key(host: str | None) -> str:
+    """Rate-limit key. An IPv6 client owns a whole /64, so the key is the /64."""
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return host or "unknown"
+    if address.version == 6:
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
 
 
 def build_llm() -> LLMClient:
@@ -128,7 +145,7 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
     async def limit_body_and_set_headers(request: Request, call_next: Callable) -> Response:
         # shortcut: trusts Content-Length; enforce the body limit at the reverse proxy too
         declared = request.headers.get("content-length", "0")
-        if not declared.isdigit() or int(declared) > MAX_BODY_BYTES:
+        if not (declared.isascii() and declared.isdigit()) or int(declared) > MAX_BODY_BYTES:
             return JSONResponse({"detail": "Requisição grande demais."}, status_code=413)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -142,6 +159,11 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
         allow_headers=["Content-Type"],
     )
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, error: RequestValidationError) -> JSONResponse:
+        # The default handler echoes the rejected input back; this one does not.
+        return JSONResponse({"detail": "Requisição inválida."}, status_code=422)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -149,8 +171,7 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
     @app.post("/chat", response_model=ChatResponse)
     def chat(body: ChatRequest, request: Request) -> ChatResponse:
         # Behind a proxy, run uvicorn with --proxy-headers so this is the real client.
-        client = request.client.host if request.client else "unknown"
-        wait = limiter.retry_after(client)
+        wait = limiter.retry_after(client_key(request.client.host if request.client else None))
         if wait:
             raise HTTPException(
                 429,

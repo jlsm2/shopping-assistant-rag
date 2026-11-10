@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import RateLimiter, build_assistant, create_app
+from app.api import RateLimiter, build_assistant, client_key, create_app
 from app.config import Settings
 from app.llm import LLMError, LLMRateLimited, LLMUnavailable
 from tests.fakes import FakeLLM, final, tool_calls
@@ -83,6 +83,20 @@ def test_chat_rejects_invalid_input_with_422(payload):
     assert response.status_code == 422
 
 
+def test_chat_validation_error_does_not_echo_the_input():
+    response = client_for().post("/chat", json={"message": "oi", "secret": "não devolva isto"})
+
+    assert response.json() == {"detail": "Requisição inválida."}
+
+
+def test_chat_survives_a_lone_surrogate_in_the_body():
+    response = client_for().post(
+        "/chat", content=b'{"message": "\\ud800 oi"}', headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 422
+
+
 def test_chat_rejects_oversized_body_with_413():
     response = client_for().post("/chat", content=b"x" * 20_000)
 
@@ -130,6 +144,33 @@ def test_startup_fails_while_no_llm_provider_is_configured():
     with pytest.raises(RuntimeError, match="No LLM provider configured"):
         with TestClient(create_app(settings=Settings())):
             pass
+
+
+@pytest.mark.parametrize(
+    ("host", "key"),
+    [
+        ("203.0.113.9", "203.0.113.9"),
+        ("2001:db8:1:1::1", "2001:db8:1:1::/64"),
+        ("2001:db8:1:1:ffff::2", "2001:db8:1:1::/64"),
+        ("testclient", "testclient"),
+        (None, "unknown"),
+    ],
+)
+def test_client_key_groups_an_ipv6_slash_64(host, key):
+    assert client_key(host) == key
+
+
+def test_rate_limiter_sweeps_stale_clients_at_most_once_per_window(monkeypatch):
+    monkeypatch.setattr("app.api.MAX_TRACKED_CLIENTS", 2)
+    now = [0.0]
+    limiter = RateLimiter(limit=1, window=60.0, clock=lambda: now[0])
+    for client in ("a", "b", "c"):
+        limiter.retry_after(client)
+
+    now[0] = 61.0
+    limiter.retry_after("d")
+
+    assert set(limiter._hits) == {"d"}
 
 
 def test_rate_limiter_frees_the_window_as_time_passes():
