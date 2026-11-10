@@ -1,0 +1,155 @@
+[
+  {
+    "id": "nude-curto",
+    "name": "Set Nude Curto",
+    "price": 59.9,
+    "stock": 12,
+    "description": "Unhas postiças press-on em tom nude, formato quadrado curto, acabamento brilhante. Kit com 24 unhas.",
+    "tags": ["nude", "curto", "quadrado", "basico", "discreto"],
+    "url": "https://lojademo.example/produtos/nude-curto"
+  },
+  {
+    "id": "nude-almond",
+    "name": "Set Nude Almond",
+    "price": 64.9,
+    "stock": 8,
+    "description": "Unhas postiças press-on em tom nude rosado, formato amendoado médio, acabamento brilhante. Kit com 24 unhas.",
+    "tags": ["nude", "almond", "amendoado", "medio", "discreto"],
+    "url": "https://lojademo.example/produtos/nude-almond"
+  },
+  {
+    "id": "french-classica",
+    "name": "Set Francesinha Clássica",
+    "price": 69.9,
+    "stock": 15,
+    "description": "Francesinha tradicional com ponta branca sobre base rosada, formato quadrado médio. Kit com 24 unhas.",
+    "tags": ["francesinha", "french", "branco", "classico", "medio"],
+    "url": "https://lojademo.example/produtos/french-classica"
+  },
+  {
+    "id": "french-baby",
+    "name": "Set Baby French Curto",
+    "price": 67.9,
+    "stock": 0,
+    "description": "Francesinha fininha (baby french) sobre base leitosa, formato oval curto. Kit com 24 unhas.",
+    "tags": ["francesinha", "french", "baby", "curto", "oval"],
+    "url": "https://lojademo.example/produtos/french-baby"
+  },
+  {
+    "id": "vermelho-classico",
+    "name": "Set Vermelho Clássico",
+    "price": 59.9,
+    "stock": 20,
+    "description": "Vermelho intenso com acabamento brilhante, formato amendoado médio. Kit com 24 unhas.",
+    "tags": ["vermelho", "classico", "amendoado", "medio"],
+    "url": "https://lojademo.example/produtos/vermelho-classico"
+  },
+  {
+    "id": "preto-fosco",
+    "name": "Set Preto Fosco Stiletto",
+    "price": 72.9,
+    "stock": 5,
+    "description": "Preto com acabamento fosco aveludado, formato stiletto longo. Kit com 24 unhas.",
+    "tags": ["preto", "fosco", "stiletto", "longo"],
+    "url": "https://lojademo.example/produtos/preto-fosco"
+  },
+  {
+    "id": "rosa-leitoso",
+    "name": "Set Rosa Leitoso",
+    "price": 62.9,
+    "stock": 9,
+    "description": "Rosa claro translúcido com efeito leitoso, formato oval curto. Kit com 24 unhas.",
+    "tags": ["rosa", "leitoso", "oval", "curto", "discreto"],
+    "url": "https://lojademo.example/produtos/rosa-leitoso"
+  },
+  {
+    "id": "glitter-champagne",
+    "name": "Set Glitter Champagne",
+    "price": 79.9,
+    "stock": 3,
+    "description": "Base nude com degradê de glitter champagne nas pontas, formato amendoado médio. Kit com 24 unhas.",
+    "tags": ["glitter", "champagne", "brilho", "festa", "amendoado"],
+    "url": "https://lojademo.example/produtos/glitter-champagne"
+  },
+  {
+    "id": "cromado-prata",
+    "name": "Set Cromado Prata",
+    "price": 84.9,
+    "stock": 0,
+    "description": "Efeito cromado espelhado na cor prata, formato coffin longo. Kit com 24 unhas.",
+    "tags": ["cromado", "prata", "espelhado", "coffin", "longo"],
+    "url": "https://lojademo.example/produtos/cromado-prata"
+  },
+  {
+    "id": "marmore-branco",
+    "name": "Set Mármore Branco",
+    "price": 74.9,
+    "stock": 6,
+    "description": "Estampa de mármore branco com veios dourados, formato quadrado médio. Kit com 24 unhas.",
+    "tags": ["marmore", "branco", "dourado", "estampa", "quadrado"],
+    "url": "https://lojademo.example/produtos/marmore-branco"
+  },
+  {
+    "id": "floral-primavera",
+    "name": "Set Floral Primavera",
+    "price": 77.9,
+    "stock": 4,
+    "description": "Flores delicadas pintadas sobre base nude, formato amendoado curto. Kit com 24 unhas.",
+    "tags": ["floral", "flores", "primavera", "estampa", "delicado"],
+    "url": "https://lojademo.example/produtos/floral-primavera"
+  },
+  {
+    "id": "coracoes-rosa",
+    "name": "Set Corações Rosa",
+    "price": 69.9,
+    "stock": 7,
+    "description": "Base rosa claro com corações vermelhos, formato oval médio. Kit com 24 unhas.",
+    "tags": ["coracao", "rosa", "romantico", "namorados", "oval"],
+    "url": "https://lojademo.example/produtos/coracoes-rosa"
+  },
+  {
+    "id": "noiva-perolas",
+    "name": "Set Noiva Pérolas",
+    "price": 129.9,
+    "stock": 2,
+    "description": "Base leitosa com aplicação de pérolas e detalhes em relevo, formato amendoado longo. Kit com 24 unhas.",
+    "tags": ["noiva", "casamento", "perolas", "luxo", "longo"],
+    "url": "https://lojademo.example/produtos/noiva-perolas"
+  },
+  {
+    "id": "kit-iniciante",
+    "name": "Kit Iniciante Completo",
+    "price": 99.9,
+    "stock": 11,
+    "description": "Para quem nunca usou press-on: um set nude curto, cola, cartela de adesivos dupla face, lixa, palito e removedor.",
+    "tags": ["kit", "iniciante", "completo", "primeira", "presente"],
+    "url": "https://lojademo.example/produtos/kit-iniciante"
+  },
+  {
+    "id": "cola-extra-forte",
+    "name": "Cola Extra Forte 7g",
+    "price": 19.9,
+    "stock": 40,
+    "description": "Cola para unhas postiças com pincel aplicador, secagem rápida. Frasco de 7g.",
+    "tags": ["cola", "acessorio", "fixacao", "reposicao"],
+    "url": "https://lojademo.example/produtos/cola-extra-forte"
+  },
+  {
+    "id": "adesivos-dupla-face",
+    "name": "Adesivos Dupla Face",
+    "price": 12.9,
+    "stock": 35,
+    "description": "Cartela com 24 adesivos dupla face em tamanhos variados, para aplicação sem cola e reutilização das unhas.",
+    "tags": ["adesivo", "acessorio", "fixacao", "reposicao", "reutilizar"],
+    "url": "https://lojademo.example/produtos/adesivos-dupla-face"
+  },
+  {
+    "id": "kit-remocao",
+    "name": "Kit Remoção Gentil",
+    "price": 34.9,
+    "stock": 10,
+    "description": "Removedor de cola sem acetona, palito de laranjeira e óleo de cutícula para tirar as unhas sem danificar.",
+    "tags": ["remocao", "removedor", "acessorio", "cuidado", "oleo"],
+    "url": "https://lojademo.example/produtos/kit-remocao"
+  }
+]

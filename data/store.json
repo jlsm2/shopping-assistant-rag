@@ -1,0 +1,7 @@
+{
+  "name": "Loja Demo",
+  "allowed_domains": ["lojademo.example"],
+  "human_contact": "(00) 90000-0000",
+  "fallback_message": "Não encontrei essa informação com segurança. Fale com a gente pelo WhatsApp {contact} que a equipe te ajuda.",
+  "greeting_message": "Oi! Sou a assistente virtual da {name}. Posso ajudar com dúvidas sobre produtos, frete, trocas, pagamento e cuidados com as unhas."
+}
