@@ -10,9 +10,85 @@ TROCA = "trocas-e-devolucoes#prazo-para-troca"
 QUESTION = {"message": "Qual o prazo para trocar um produto?"}
 
 
-def client_for(*script, **settings) -> TestClient:
-    config = Settings(**settings)
-    return TestClient(create_app(build_assistant(config, FakeLLM(*script)), config))
+TOKEN = "test-token-0123456789abcdefghijklmnopqrstuv"
+OLD_TOKEN = "old-token-0123456789abcdefghijklmnopqrstuvw"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
+
+def client_for(*script, headers=AUTH, **settings) -> TestClient:
+    config = Settings(**{"service_tokens": (TOKEN,), **settings})
+    app = create_app(build_assistant(config, FakeLLM(*script)), config)
+    return TestClient(app, headers=headers)
+
+
+# --- service authentication ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer wrong-token-0123456789abcdefghijklmnop"},
+        {"Authorization": f"Basic {TOKEN}"},
+        {"Authorization": TOKEN},
+        {"Authorization": f"Bearer {TOKEN} "},
+        {"X-API-Key": TOKEN},
+    ],
+)
+def test_chat_requires_the_service_token(headers):
+    client = client_for(final(outcome="needs_human"), headers=headers)
+
+    response = client.post("/chat", json=QUESTION)
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_chat_checks_the_token_before_reading_the_message():
+    response = client_for(headers={}).post("/chat", json={"message": ""})
+
+    assert response.status_code == 401
+
+
+def test_chat_rejects_everyone_when_no_token_is_configured():
+    client = client_for(final(outcome="needs_human"), service_tokens=())
+
+    assert client.post("/chat", json=QUESTION).status_code == 401
+    assert (
+        client.post("/chat", json=QUESTION, headers={"Authorization": "Bearer "}).status_code == 401
+    )
+
+
+def test_chat_accepts_any_configured_token_so_keys_can_rotate():
+    client = client_for(
+        final(outcome="needs_human"),
+        headers={"Authorization": f"Bearer {OLD_TOKEN}"},
+        service_tokens=(TOKEN, OLD_TOKEN),
+    )
+
+    assert client.post("/chat", json=QUESTION).status_code == 200
+
+
+def test_health_needs_no_token():
+    assert client_for(headers={}).get("/health").status_code == 200
+
+
+def test_rate_limit_follows_the_end_user_sent_by_the_store_backend():
+    client = client_for(*[final(outcome="needs_human")] * 2, rate_limit_per_minute=1)
+
+    def status(end_user: str) -> int:
+        return client.post("/chat", json=QUESTION, headers={"X-End-User-Id": end_user}).status_code
+
+    assert [status("session-a"), status("session-a"), status("session-b")] == [200, 429, 200]
+
+
+def test_startup_fails_without_a_service_token():
+    with pytest.raises(RuntimeError, match="SERVICE_TOKENS"):
+        with TestClient(create_app(settings=Settings())):
+            pass
+
+
+# --- chat ----------------------------------------------------------------------
 
 
 def test_health():
@@ -142,7 +218,7 @@ def test_cors_only_allows_configured_origins():
 
 def test_startup_fails_while_no_llm_provider_is_configured():
     with pytest.raises(RuntimeError, match="No LLM provider configured"):
-        with TestClient(create_app(settings=Settings())):
+        with TestClient(create_app(settings=Settings(service_tokens=(TOKEN,)))):
             pass
 
 

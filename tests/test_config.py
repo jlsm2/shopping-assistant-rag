@@ -8,6 +8,8 @@ from app.config import DEFAULT_DATA_DIR, Settings, Store
 def test_settings_defaults_when_environment_is_empty(monkeypatch):
     for name in ("DATA_DIR", "RETRIEVAL_TOP_K", "CORS_ORIGINS", "RATE_LIMIT_PER_MINUTE"):
         monkeypatch.delenv(name, raising=False)
+    for name in ("SERVICE_TOKENS", "RETRIEVAL_MIN_SCORE", "MAX_TOOL_ITERATIONS"):
+        monkeypatch.delenv(name, raising=False)
 
     assert Settings.from_env() == Settings()
 
@@ -19,8 +21,10 @@ def test_settings_read_from_environment(monkeypatch):
     monkeypatch.setenv("MAX_TOOL_ITERATIONS", "2")
     monkeypatch.setenv("CORS_ORIGINS", "https://a.example, https://b.example")
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "5")
+    monkeypatch.setenv("SERVICE_TOKENS", f"{'a' * 32}, {'b' * 40}")
 
     assert Settings.from_env() == Settings(
+        service_tokens=("a" * 32, "b" * 40),
         data_dir=Path("/srv/store"),
         retrieval_top_k=6,
         retrieval_min_score=2.5,
@@ -34,6 +38,7 @@ def test_settings_read_from_environment(monkeypatch):
     "invalid",
     [
         {"cors_origins": ("*",)},
+        {"service_tokens": ("short-secret",)},
         {"rate_limit_per_minute": 0},
         {"max_tool_iterations": 0},
         {"retrieval_top_k": 0},

@@ -1,5 +1,6 @@
 """HTTP API: POST /chat and GET /health."""
 
+import hmac
 import ipaddress
 import logging
 import math
@@ -9,7 +10,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -28,6 +29,8 @@ MAX_BODY_BYTES = 16_384
 RATE_WINDOW_SECONDS = 60.0
 MAX_TRACKED_CLIENTS = 10_000
 DEFAULT_RETRY_AFTER_SECONDS = 30
+END_USER_HEADER = "x-end-user-id"
+MAX_END_USER_CHARS = 128
 
 
 class ChatRequest(BaseModel):
@@ -134,9 +137,22 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Fail at startup, not on the first customer, when the provider is missing.
+        # Fail at startup, not on the first customer, when something is missing.
+        if not settings.service_tokens:
+            raise RuntimeError(
+                "SERVICE_TOKENS is not set. Generate one with "
+                '`python -c "import secrets; print(secrets.token_urlsafe(32))"`.'
+            )
         app.state.assistant = assistant or build_assistant(settings, build_llm())
         yield
+
+    def require_service_token(request: Request) -> None:
+        """Only the store backend may call /chat. Fails closed without tokens."""
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not any(
+            hmac.compare_digest(token.encode(), valid.encode()) for valid in settings.service_tokens
+        ):
+            raise HTTPException(401, "Não autorizado.", headers={"WWW-Authenticate": "Bearer"})
 
     app = FastAPI(title="shopping-assistant-rag", lifespan=lifespan)
     app.state.assistant = assistant
@@ -168,10 +184,14 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/chat", response_model=ChatResponse)
+    @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_service_token)])
     def chat(body: ChatRequest, request: Request) -> ChatResponse:
-        # Behind a proxy, run uvicorn with --proxy-headers so this is the real client.
-        wait = limiter.retry_after(client_key(request.client.host if request.client else None))
+        # Every request comes from the store backend, so its IP says nothing
+        # about the customer. The backend names the customer (session id or IP)
+        # in a header, which is trusted because the request is authenticated.
+        end_user = request.headers.get(END_USER_HEADER, "")[:MAX_END_USER_CHARS]
+        connection = request.client.host if request.client else None
+        wait = limiter.retry_after(client_key(end_user or connection))
         if wait:
             raise HTTPException(
                 429,

@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+MIN_SERVICE_TOKEN_CHARS = 32
+
+
+def _csv(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 @dataclass(frozen=True)
@@ -16,8 +21,13 @@ class Settings:
     max_tool_iterations: int = 4
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     rate_limit_per_minute: int = 20
+    service_tokens: tuple[str, ...] = ()  # more than one only while rotating
 
     def __post_init__(self) -> None:
+        if any(len(token) < MIN_SERVICE_TOKEN_CHARS for token in self.service_tokens):
+            raise ValueError(
+                f"each SERVICE_TOKENS entry needs at least {MIN_SERVICE_TOKEN_CHARS} characters"
+            )
         if self.retrieval_top_k < 1 or self.max_tool_iterations < 1:
             raise ValueError("RETRIEVAL_TOP_K and MAX_TOOL_ITERATIONS must be >= 1")
         if self.rate_limit_per_minute < 1:
@@ -37,14 +47,11 @@ class Settings:
                 env.get("RETRIEVAL_MIN_SCORE") or default.retrieval_min_score
             ),
             max_tool_iterations=int(env.get("MAX_TOOL_ITERATIONS") or default.max_tool_iterations),
-            cors_origins=(
-                tuple(o.strip() for o in origins.split(",") if o.strip())
-                if origins is not None
-                else default.cors_origins
-            ),
+            cors_origins=_csv(origins) if origins is not None else default.cors_origins,
             rate_limit_per_minute=int(
                 env.get("RATE_LIMIT_PER_MINUTE") or default.rate_limit_per_minute
             ),
+            service_tokens=_csv(env.get("SERVICE_TOKENS", "")),
         )
 
 
