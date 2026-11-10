@@ -215,10 +215,9 @@ def test_retrieval_only_run_needs_no_llm(capsys):
     assert "retrieval recall@4" in capsys.readouterr().out
 
 
-def test_full_run_exits_with_2_without_a_provider_key(capsys, monkeypatch):
-    # Without this, a key exported in the developer's shell would start a paid run.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+def test_full_run_exits_with_2_while_no_provider_is_configured(capsys, monkeypatch):
+    # Without this, a provider exported in the developer's shell would start a paid run.
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
 
     assert main([]) == 2
-    assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
+    assert "LLM_PROVIDER" in capsys.readouterr().err

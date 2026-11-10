@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MIN_SERVICE_TOKEN_CHARS = 32
-EFFORT_LEVELS = ("", "low", "medium", "high", "xhigh", "max")
+LLM_PROVIDERS = ("anthropic", "openai")  # "openai" is any OpenAI-compatible API
 
 
 def load_env_file(path: Path, environ: MutableMapping[str, str] = os.environ) -> None:
@@ -42,16 +42,20 @@ class Settings:
     service_tokens: tuple[str, ...] = ()  # more than one only while rotating
     daily_token_budget: int = 2_000_000  # LLM tokens (input + output) per UTC day
     llm_timeout_seconds: float = 30.0  # for one question, tool rounds included
-    assistant_model: str = "claude-opus-5-5"
-    assistant_effort: str = "low"  # empty: do not send effort (models without it)
-    assistant_max_tokens: int = 4096  # output cap per call, thinking included
-    assistant_server_fallback: bool = True  # re-run safety declines on a fallback model
+    # The LLM is chosen entirely by configuration: there is no default provider
+    # or model. The API key is read from the environment, never stored here.
+    llm_provider: str = ""  # one of LLM_PROVIDERS
+    llm_model: str = ""
+    llm_base_url: str = ""  # empty: the provider's own address
+    llm_effort: str = ""  # reasoning effort; empty: not sent
+    llm_max_tokens: int = 4096  # output cap per call, reasoning included
+    llm_refusal_fallback: bool = True  # Anthropic only: re-run a safety decline
 
     def __post_init__(self) -> None:
-        if not self.assistant_model or self.assistant_max_tokens < 1:
-            raise ValueError("ASSISTANT_MODEL and ASSISTANT_MAX_TOKENS must be set")
-        if self.assistant_effort not in EFFORT_LEVELS:
-            raise ValueError(f"ASSISTANT_EFFORT must be one of {EFFORT_LEVELS}")
+        if self.llm_provider not in ("", *LLM_PROVIDERS):
+            raise ValueError(f"LLM_PROVIDER must be one of {LLM_PROVIDERS}")
+        if self.llm_max_tokens < 1:
+            raise ValueError("LLM_MAX_TOKENS must be >= 1")
         if self.daily_token_budget < 1 or self.llm_timeout_seconds <= 0:
             raise ValueError("DAILY_TOKEN_BUDGET and LLM_TIMEOUT_SECONDS must be positive")
         if any(len(token) < MIN_SERVICE_TOKEN_CHARS for token in self.service_tokens):
@@ -87,12 +91,12 @@ class Settings:
             llm_timeout_seconds=float(
                 env.get("LLM_TIMEOUT_SECONDS") or default.llm_timeout_seconds
             ),
-            assistant_model=env.get("ASSISTANT_MODEL") or default.assistant_model,
-            assistant_effort=env.get("ASSISTANT_EFFORT", default.assistant_effort).strip(),
-            assistant_max_tokens=int(
-                env.get("ASSISTANT_MAX_TOKENS") or default.assistant_max_tokens
-            ),
-            assistant_server_fallback=env.get("ASSISTANT_SERVER_FALLBACK", "true").strip().lower()
+            llm_provider=env.get("LLM_PROVIDER", "").strip().lower(),
+            llm_model=env.get("LLM_MODEL", "").strip(),
+            llm_base_url=env.get("LLM_BASE_URL", "").strip(),
+            llm_effort=env.get("LLM_EFFORT", "").strip(),
+            llm_max_tokens=int(env.get("LLM_MAX_TOKENS") or default.llm_max_tokens),
+            llm_refusal_fallback=env.get("LLM_REFUSAL_FALLBACK", "true").strip().lower()
             in ("1", "true", "yes"),
         )
 

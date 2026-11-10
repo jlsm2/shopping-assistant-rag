@@ -8,9 +8,7 @@ import httpx2
 import pytest
 
 from app.anthropic_llm import AnthropicLLM
-from app.api import build_llm
 from app.assistant import ANSWER_SCHEMA, TOOLS, Assistant
-from app.config import Settings
 from app.llm import (
     AssistantMessage,
     LLMError,
@@ -137,7 +135,7 @@ def test_tools_are_strict_and_tool_choice_is_left_on_auto():
 
 def test_server_side_refusal_fallback_is_on_by_default_and_can_be_turned_off():
     with_fallback, _, _ = complete()
-    without_fallback, _, _ = complete(server_fallback=False)
+    without_fallback, _, _ = complete(refusal_fallback=False)
 
     assert with_fallback.endpoint == "beta.messages"
     assert with_fallback.request["betas"] == ["server-side-fallback-2026-07-01"]
@@ -335,7 +333,7 @@ def test_full_tool_loop_through_the_real_sdk_with_a_fake_network(index, catalog,
         http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(network)),
     )
     assistant = Assistant(
-        llm=AnthropicLLM(model="claude-opus-5-5", client=client),
+        llm=AnthropicLLM(client, model="claude-opus-5-5", effort="low"),
         index=index,
         catalog=catalog,
         store=store,
@@ -370,26 +368,3 @@ def test_full_tool_loop_through_the_real_sdk_with_a_fake_network(index, catalog,
     (tool_result,) = tool_turn["content"]
     assert tool_result["tool_use_id"] == "toolu_1" and tool_result["is_error"] is False
     assert "nude-curto" in tool_result["content"]
-
-
-# --- wiring ----------------------------------------------------------------------
-
-
-def test_build_llm_fails_fast_without_credentials(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-        build_llm(Settings())
-
-
-def test_build_llm_uses_the_configured_model(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-real-key")
-    settings = Settings(
-        assistant_model="claude-sonnet-5-5", assistant_effort="", assistant_max_tokens=900
-    )
-
-    llm = build_llm(settings)
-
-    assert isinstance(llm, AnthropicLLM)
-    assert (llm.model, llm.effort, llm.max_tokens) == ("claude-sonnet-5-5", None, 900)

@@ -312,11 +312,8 @@ def test_cors_only_allows_configured_origins():
     assert "access-control-allow-origin" not in foreign.headers
 
 
-def test_startup_fails_without_the_provider_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY is not set"):
+def test_startup_fails_while_no_llm_provider_is_configured():
+    with pytest.raises(RuntimeError, match="LLM_PROVIDER"):
         with TestClient(create_app(settings=Settings(service_tokens=(TOKEN,)))):
             pass
 

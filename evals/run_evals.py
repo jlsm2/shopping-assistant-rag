@@ -26,6 +26,7 @@ from app.catalog import JsonCatalog
 from app.config import Settings, Store
 from app.llm import LLMError
 from app.prompts import CANARY
+from app.providers import build_llm
 from app.retrieval import Index, load_chunks, normalize
 
 ROOT = Path(__file__).resolve().parent
@@ -249,8 +250,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  ({retrieval['cases']} answer cases, misses: {retrieval['misses'] or 'none'})")
     if args.retrieval_only:
         return 0
-
-    from app.api import build_llm
 
     try:
         llm = build_llm(settings)

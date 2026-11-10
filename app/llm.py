@@ -1,8 +1,9 @@
 """Provider-neutral LLM interface.
 
-The assistant only talks to `LLMClient`. The current adapter is
-`app.anthropic_llm.AnthropicLLM`, wired in `app.api.build_llm()`. To use another
-provider, write one more adapter and return it from there.
+The assistant only talks to `LLMClient`. Which adapter runs is decided by
+configuration in `app.providers.build_llm()`: `app.anthropic_llm` for the
+Anthropic API, `app.openai_llm` for any OpenAI-compatible API. To support
+another kind of API, write one more adapter and add it there.
 
 What an adapter must guarantee, because the security model depends on it:
 - `system` goes in the provider's system/developer channel, never merged into a
@@ -105,6 +106,27 @@ class LLMRateLimited(LLMError):
 
 class LLMUnavailable(LLMError):
     """Connection failure, timeout or provider 5xx."""
+
+
+# One retry rides out a transient overload. Adapters give each attempt
+# timeout / (SDK_RETRIES + 1), so all attempts fit in the question's deadline.
+SDK_RETRIES = 1
+
+
+def neutral_error(error: Exception, sdk: Any) -> LLMError:
+    """Translate an error raised by a provider SDK.
+
+    The `anthropic` and `openai` SDKs share these class names. `sdk` is the
+    imported module.
+    """
+    if isinstance(error, sdk.RateLimitError):
+        retry_after = error.response.headers.get("retry-after", "")
+        return LLMRateLimited(int(retry_after) if retry_after.isdigit() else None)
+    if isinstance(error, sdk.APIStatusError):
+        if error.status_code >= 500:
+            return LLMUnavailable(f"provider {error.status_code}")
+        return LLMError(f"provider {error.status_code}: {error.message}")
+    return LLMUnavailable(type(error).__name__)  # connection failure or timeout
 
 
 class LLMClient(Protocol):

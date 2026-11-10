@@ -1,7 +1,6 @@
-"""`LLMClient` adapter for the Anthropic Messages API (Claude).
+"""`LLMClient` adapter for the Anthropic Messages API.
 
-The only module that imports the provider SDK. Everything it must guarantee
-is listed in `app/llm.py`.
+Everything an adapter must guarantee is listed in `app/llm.py`.
 """
 
 from collections.abc import Sequence
@@ -10,21 +9,19 @@ from typing import Any
 import anthropic
 
 from app.llm import (
+    SDK_RETRIES,
     AssistantMessage,
-    LLMError,
-    LLMRateLimited,
     LLMResponse,
-    LLMUnavailable,
     Message,
     StopReason,
     ToolCall,
     ToolSpec,
     Usage,
     UserMessage,
+    neutral_error,
 )
 
 REFUSAL_FALLBACK_BETA = "server-side-fallback-2026-07-01"
-SDK_RETRIES = 1
 _STOP_REASONS: dict[str, StopReason] = {
     "end_turn": "final",
     "tool_use": "tool_calls",
@@ -58,17 +55,17 @@ def _to_param(message: Message) -> dict[str, Any]:
 class AnthropicLLM:
     def __init__(
         self,
+        client: anthropic.Anthropic,
         model: str,
-        effort: str | None = "low",
+        effort: str | None = None,
         max_tokens: int = 4096,
-        server_fallback: bool = True,
-        client: anthropic.Anthropic | None = None,
+        refusal_fallback: bool = True,
     ) -> None:
+        self._client = client
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
-        self.server_fallback = server_fallback
-        self._client = client or anthropic.Anthropic()
+        self.refusal_fallback = refusal_fallback
 
     def complete(
         self,
@@ -102,13 +99,11 @@ class AnthropicLLM:
             ],
             "output_config": output_config,
         }
-        # One retry rides out a transient overload. Each attempt gets half the
-        # time left, so both together stay inside the question's deadline.
         client = self._client.with_options(
             timeout=timeout / (SDK_RETRIES + 1), max_retries=SDK_RETRIES
         )
         try:
-            if self.server_fallback:
+            if self.refusal_fallback:
                 # A safety decline is re-run on the model Anthropic recommends
                 # for that category, inside the same call.
                 response = client.beta.messages.create(
@@ -116,15 +111,8 @@ class AnthropicLLM:
                 )
             else:
                 response = client.messages.create(**request)
-        except anthropic.RateLimitError as error:
-            retry_after = error.response.headers.get("retry-after", "")
-            raise LLMRateLimited(int(retry_after) if retry_after.isdigit() else None) from error
-        except anthropic.APIStatusError as error:
-            if error.status_code >= 500:
-                raise LLMUnavailable(f"provider {error.status_code}") from error
-            raise LLMError(f"provider {error.status_code}: {error.message}") from error
-        except anthropic.APIConnectionError as error:  # includes timeouts
-            raise LLMUnavailable(type(error).__name__) from error
+        except (anthropic.APIStatusError, anthropic.APIConnectionError) as error:
+            raise neutral_error(error, anthropic) from error
         return _to_response(response)
 
 

@@ -4,7 +4,6 @@ import hmac
 import ipaddress
 import logging
 import math
-import os
 import threading
 import time
 from collections import deque
@@ -17,13 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.anthropic_llm import AnthropicLLM
 from app.assistant import Assistant
 from app.budget import TokenBudget
 from app.catalog import JsonCatalog
 from app.config import Settings, Store
 from app.guard import MAX_INPUT_CHARS, InvalidInput
 from app.llm import LLMClient, LLMError, LLMRateLimited, LLMUnavailable, Usage
+from app.providers import build_llm
 from app.retrieval import Index, load_chunks
 from app.telemetry import Metrics, accept_request_id, request_id
 
@@ -113,21 +112,6 @@ def client_key(host: str | None) -> str:
     if address.version == 6:
         return str(ipaddress.ip_network(f"{address}/64", strict=False))
     return str(address)
-
-
-def build_llm(settings: Settings) -> LLMClient:
-    """The single place where the LLM provider is chosen."""
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Create a key at console.anthropic.com "
-            "and add it to .env."
-        )
-    return AnthropicLLM(
-        model=settings.assistant_model,
-        effort=settings.assistant_effort or None,
-        max_tokens=settings.assistant_max_tokens,
-        server_fallback=settings.assistant_server_fallback,
-    )
 
 
 def build_assistant(settings: Settings, llm: LLMClient) -> Assistant:
