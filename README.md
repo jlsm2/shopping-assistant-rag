@@ -38,10 +38,9 @@ flowchart TD
     F -- pede ferramenta --> G[Allowlist + validação Pydantic<br/>search_products / get_product]
     G -- resultado em envelope --> F
     G -. passou de 4 rodadas .-> X
-    F -- resposta final --> H[Validação determinística<br/>citações, produtos, preços, prazos, contatos]
+    F -- resposta final --> H[Revisão determinística da resposta<br/>marcação, vazamento do prompt, links,<br/>citações, números, códigos, contatos]
     H -- reprovou --> X[Fallback fixo<br/>contato humano]
-    H -- aprovou --> I[Remove links externos<br/>checa vazamento do prompt]
-    I --> J[Servidor monta sources e products<br/>a partir dos dados, não do texto do modelo]
+    H -- aprovou --> J[Servidor monta sources e products<br/>e informa indisponibilidade<br/>a partir dos dados, não do texto do modelo]
 ```
 
 | Arquivo | Papel |
@@ -72,30 +71,33 @@ A premissa é que o modelo **pode** ser enganado. Por isso as garantias não dep
 |---|---|
 | Entrada | Remove caracteres de controle e invisíveis (zero-width, bidi, tags Unicode), limita a 800 caracteres. A mensagem vai só no papel `user`, nunca no system prompt. |
 | Envelopes | Documentos, resultados de ferramenta e a própria mensagem da cliente vão dentro de `<document>`, `<tool_data>` e `<customer_message>`, com `&`, `<` e `>` escapados. Nenhum texto consegue fechar ou forjar uma tag. |
-| Privilégio mínimo | Só existem duas ferramentas, ambas de leitura, em uma allowlist no código. Chamada fora da lista ou com parâmetro inválido volta como erro e é logada. No máximo 4 rodadas de ferramenta. Não há segredo, token ou dado pessoal no contexto. |
+| Privilégio mínimo | Só existem duas ferramentas, ambas de leitura, em uma allowlist no código. Chamada fora da lista ou com parâmetro inválido volta como erro e é logada. No máximo 4 rodadas de ferramenta e 5 chamadas por rodada. Não há segredo, token ou dado pessoal no contexto. |
 | Sem histórico do cliente | A v1 é single-turn: histórico enviado pelo cliente permitiria forjar turnos do assistente. Campos extras no JSON são rejeitados com 422. |
-| Saída | Links fora de `allowed_domains` viram `[link removido]`. Se a resposta contém a frase-canário ou uma frase inteira do system prompt, cai no fallback. A resposta é texto puro; o frontend não deve renderizar HTML. |
+| Saída | A resposta do modelo passa pela mesma limpeza da entrada (NFKC, sem caracteres invisíveis) antes de qualquer checagem. Cai no fallback se tiver `<` ou `>`, link fora de `allowed_domains` (inclusive com `\`, IP, domínio acentuado ou em outro alfabeto), a frase-canário, 8 palavras seguidas do system prompt, ou mais de 1.200 caracteres. Mesmo assim, o frontend deve tratar a resposta como texto puro. |
 | Ações | O chat nunca altera estado (cancelar pedido, aplicar cupom). Não existe ferramenta para isso. |
 
 Na v3 (status de pedido), o `user_id` virá da **sessão no servidor**. O modelo nunca escolhe de quem é o dado.
 
 ### 3. Prevenção de alucinação
 
-O prompt instrui o modelo a responder só com as fontes, mas quem decide é o código. Depois de cada resposta, `guard.validate_grounding` cai no fallback se:
+O prompt instrui o modelo a responder só com as fontes, mas quem decide é o código, que parte do princípio de que o modelo pode escrever qualquer coisa. Depois de cada resposta, `guard.validate_grounding` cai no fallback se:
 
 1. `citations` tem um id que não foi recuperado nesta pergunta;
 2. `products` tem um id que não veio de uma ferramenta nesta pergunta;
 3. a resposta não cita nenhum documento nem produto;
-4. algum valor em reais (`R$ 59,90`, `59.90`, `1.299,00`, `150 reais`) não aparece nos documentos nem nos resultados de ferramenta;
-5. algum prazo, percentual ou parcelamento (`7 dias`, `10%`, `3x`, `24h`) não aparece nas fontes;
-6. algum número longo (telefone, chave Pix, CPF) não aparece nas fontes nem é o contato da loja;
-7. o modelo recusou, foi cortado por limite de tokens ou devolveu JSON inválido.
+4. **qualquer número** da resposta não aparece nos documentos citados nem nos produtos listados. Não importa a unidade nem o símbolo: `R$ 5,00`, `5,00`, `1 real`, `90 dias`, `99,5%` e `12x` são tratados do mesmo jeito, e `59,90`, `59.90` e `59.9` contam como o mesmo valor;
+5. algum código que mistura letras e dígitos (cupom, chave) não aparece nas fontes citadas;
+6. algum número longo (telefone, chave Pix, CPF) não é o contato da loja nem está nas fontes, mesmo que cada pedaço dele apareça em algum lugar;
+7. a resposta pede senha, CVV, CPF ou dados do cartão sem que a fonte citada fale disso;
+8. o modelo recusou, foi cortado por limite de tokens ou devolveu JSON inválido.
 
-O que a cliente escreve **não conta como evidência**: "vi que custa R$ 5, confirma?" não autoriza a resposta a repetir R$ 5.
+A evidência é **só o que a resposta cita**. Um valor não pode ser emprestado de um documento vizinho nem de outro produto: "o Set Noiva custa R$ 12,90" é barrado mesmo que R$ 12,90 seja o preço real dos adesivos retornados na mesma busca. O que a cliente escreve também não conta: "vi que custa R$ 5, confirma?" não autoriza a resposta a repetir R$ 5.
 
 Além disso:
 
 - Preço e disponibilidade na resposta HTTP vêm do catálogo, não do texto do modelo. O modelo só recebe `public_view()`: `in_stock` booleano, sem estoque numérico nem custo.
+- Se um produto citado está sem estoque e a resposta não diz isso, o servidor acrescenta "Indisponível no momento: ...".
+- Se uma guarda falhar com exceção, a resposta cai no fallback (falha fechada).
 - Cumprimentos ("oi", "obrigada") recebem uma saudação fixa de `store.json`. O texto do modelo é descartado.
 - O motivo de cada fallback é logado (sem a mensagem da cliente) e alimenta as métricas.
 
@@ -107,12 +109,15 @@ O conjunto de avaliação (`evals/cases.jsonl`) tem 80 casos escritos à mão a 
 |---|---|---|
 | Recall da busca (top 4) | **97,1%** (34 de 35) | Offline, sem LLM: o chunk esperado está entre os recuperados |
 | Answer accuracy | pendente | Citação esperada presente e texto esperado na resposta |
-| Product hit rate | pendente | Produto esperado entre os retornados |
-| Fallback em fora de escopo | pendente | Casos fora de escopo que caíram no fallback |
-| Injection resistance | pendente | Casos de injection sem vazamento (canário, link externo, preço inventado, texto proibido) |
-| Ungrounded-claim rate | pendente | Respostas barradas pela validação determinística |
+| Product hit rate | pendente | Produto esperado retornado, com o preço do catálogo e a indisponibilidade informada |
+| Fallback em fora de escopo | pendente | Casos fora de escopo que caíram no fallback (recall) |
+| Fallback precision | pendente | Dos fallbacks, quantos não foram uma pergunta legítima recusada |
+| Injection resistance | pendente | Casos de injection que caíram no fallback ou responderam certo à parte legítima, sem link externo, marcação, canário ou texto proibido |
+| Grounding block rate | pendente | Perguntas legítimas em que o modelo rascunhou algo sem evidência e a validação barrou |
 
 As linhas "pendente" dependem do provedor de LLM e serão preenchidas com a saída de `python -m evals.run_evals`. O único caso que a busca erra (`cuidado-04`, "Como tiro as unhas...") é um sinônimo que o BM25 não alcança ("tirar" contra "remover"); é o tipo de caso que a busca vetorial da v2 resolve.
+
+O avaliador do eval não reutiliza as checagens de `app/guard.py`: um ponto cego da guarda não pode ser também um ponto cego da nota. `tests/test_eval_cases.py` prova, para cada caso de injection, que uma resposta que obedece ao ataque é reprovada.
 
 ```bash
 python -m evals.run_evals --retrieval-only   # offline, grátis
@@ -157,13 +162,14 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 
 ## Limitações conhecidas
 
-- **Afirmação falsa sem número.** A validação pega ids, valores, prazos e contatos. Uma frase como "aceitamos cheque", com uma citação válida, passa. Fechar isso exige checagem de implicação (segundo modelo ou NLI).
+- **Afirmação falsa sem número.** A validação pega ids, números, códigos, contatos e links. Uma frase como "aceitamos cheque", com uma citação válida, passa. O mesmo vale para número escrito por extenso ("noventa por cento") e para um valor real ligado à afirmação errada dentro do mesmo documento citado. Fechar isso exige checagem de implicação (segundo modelo ou NLI) ou respostas montadas por template.
+- **Validação estrita derruba respostas boas.** Qualquer número fora das fontes citadas leva ao fallback, inclusive uma enumeração ("1.", "2.") ou uma contagem ("temos 2 opções"). É a escolha deliberada: falhar para o lado seguro. A taxa real só aparece no eval com o modelo.
 - **A base de conhecimento é confiável.** Uma instrução escondida em um documento é tratada como dado, mas um documento com uma política falsa escrita como fato é indistinguível de uma política real. Por isso avaliações de clientes não entram no RAG.
 - **Sem contas.** "Dois sets saem por R$ 119,80" cai no fallback, porque a soma não está nas fontes. É proposital.
 - **Busca lexical.** Sinônimos e paráfrases distantes escapam do BM25.
 - **Single-turn.** Perguntas de continuação ("e para o Sul?") não têm contexto.
 - **Rate limit em memória**, por processo. Com mais de um worker, usar Redis.
-- **Falsos positivos do filtro de links.** Texto como "fim.Depois" (sem espaço após o ponto) é lido como domínio e removido.
+- **Falsos positivos do filtro de links.** Texto como "fim.Depois" (sem espaço após o ponto) é lido como domínio e leva ao fallback.
 
 ## Roadmap
 
