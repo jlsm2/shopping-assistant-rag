@@ -14,6 +14,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -24,7 +25,7 @@ from app import guard
 from app.assistant import Assistant, AssistantReply
 from app.catalog import JsonCatalog
 from app.config import Settings, Store
-from app.llm import LLMError
+from app.llm import LLMError, LLMRateLimited
 from app.prompts import CANARY
 from app.providers import build_llm
 from app.retrieval import Index, load_chunks, normalize
@@ -195,6 +196,25 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+RATE_LIMIT_RETRIES = 5
+DEFAULT_RATE_LIMIT_WAIT_SECONDS = 15
+MAX_RATE_LIMIT_WAIT_SECONDS = 60
+
+
+def answer_patiently(assistant: Assistant, question: str, sleep=time.sleep) -> AssistantReply:
+    """Free tiers cap tokens per minute: a short wait is quota, not a failed case.
+    A long wait (the daily quota is spent) still fails it."""
+    for _ in range(RATE_LIMIT_RETRIES):
+        try:
+            return assistant.answer(question)
+        except LLMRateLimited as error:
+            wait = error.retry_after or DEFAULT_RATE_LIMIT_WAIT_SECONDS
+            if wait > MAX_RATE_LIMIT_WAIT_SECONDS:
+                raise
+            sleep(wait)
+    return assistant.answer(question)
+
+
 def run_cases(
     cases: list[dict[str, Any]],
     assistant: Assistant,
@@ -214,7 +234,7 @@ def run_cases(
             "usage": [0, 0],
         }
         try:
-            reply = assistant.answer(case["question"])
+            reply = answer_patiently(assistant, case["question"])
         except (LLMError, guard.InvalidInput) as error:
             return {**row, "passed": False, "problems": [f"error: {type(error).__name__}"]}
         problems = grade(case, reply, store.allowed_domains, store_prices, product_prices)

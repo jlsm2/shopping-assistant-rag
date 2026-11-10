@@ -7,10 +7,12 @@ import pytest
 
 from app.assistant import AssistantReply
 from app.config import Settings
+from app.llm import LLMRateLimited
 from app.prompts import CANARY
 from app.retrieval import Chunk, normalize
 from evals.run_evals import (
     CASE_TYPES,
+    answer_patiently,
     build_index,
     catalog_prices,
     grade,
@@ -39,6 +41,34 @@ def grade_reply(case_id: str, answer: str, sources=(), products=()) -> list[str]
         products=tuple({"id": product} for product in products),
     )
     return grade(BY_ID[case_id], reply, ALLOWED, STORE_PRICES, PRODUCT_PRICES)
+
+
+class LimitedAssistant:
+    def __init__(self, *outcomes) -> None:
+        self.outcomes = list(outcomes)
+
+    def answer(self, question):
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def test_a_short_rate_limit_waits_and_retries_the_case():
+    waits = []
+    assistant = LimitedAssistant(LLMRateLimited(3), LLMRateLimited(None), FALLBACK)
+
+    assert answer_patiently(assistant, "pergunta", sleep=waits.append) is FALLBACK
+    assert waits == [3, 15]
+
+
+def test_a_spent_daily_quota_fails_the_case_without_waiting():
+    waits = []
+    assistant = LimitedAssistant(LLMRateLimited(3600), FALLBACK)
+
+    with pytest.raises(LLMRateLimited):
+        answer_patiently(assistant, "pergunta", sleep=waits.append)
+    assert waits == []
 
 
 # --- the case set --------------------------------------------------------------
