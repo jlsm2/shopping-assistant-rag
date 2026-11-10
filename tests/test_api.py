@@ -88,6 +88,102 @@ def test_startup_fails_without_a_service_token():
             pass
 
 
+# --- observability ---------------------------------------------------------------
+
+
+def test_response_carries_the_callers_request_id():
+    client = client_for(final(outcome="needs_human"))
+
+    response = client.post("/chat", json=QUESTION, headers={"X-Request-Id": "loja-req-42"})
+
+    assert response.headers["x-request-id"] == "loja-req-42"
+
+
+def test_response_gets_a_generated_request_id_when_the_callers_is_unsafe():
+    client = client_for()
+
+    unsafe = client.get("/health", headers={"X-Request-Id": "evil id\twith spaces"})
+    rejected = client.post("/chat", content=b"x" * 20_000)
+
+    assert len(unsafe.headers["x-request-id"]) == 32
+    assert len(rejected.headers["x-request-id"]) == 32
+
+
+def test_each_chat_request_logs_one_line_without_the_customer_message(caplog):
+    client = client_for(final(outcome="needs_human"))
+
+    with caplog.at_level("INFO", logger="app"):
+        client.post("/chat", json=QUESTION, headers={"X-Request-Id": "loja-req-42"})
+
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("chat ")]
+    assert "request_id=loja-req-42" in line
+    assert "outcome=fallback reason=needs_human" in line
+    assert "tokens_in=100 tokens_out=20" in line
+    assert "duration_ms=" in line
+    assert "trocar" not in caplog.text  # nothing from the customer message
+    # Lines logged deeper in the stack carry the same id.
+    assert [r.getMessage() for r in caplog.records if r.name == "app.assistant"] == [
+        "fallback request_id=loja-req-42 reason=needs_human"
+    ]
+
+
+def test_metrics_need_the_service_token():
+    assert client_for(headers={}).get("/metrics").status_code == 401
+
+
+def test_metrics_report_outcomes_fallback_reasons_tokens_and_budget():
+    client = client_for(
+        final("A troca é em até 7 dias corridos.", citations=(TROCA,)),
+        final(outcome="needs_human"),
+        final("A troca é em até 90 dias.", citations=(TROCA,)),
+        LLMUnavailable("down"),
+        daily_token_budget=5000,
+    )
+    for _ in range(4):
+        client.post("/chat", json=QUESTION)
+    client.post("/chat", json=QUESTION, headers={"Authorization": "Bearer nope"})
+
+    response = client.get("/metrics")
+    text = response.text
+
+    assert response.headers["content-type"].startswith("text/plain")
+    assert 'chat_outcomes_total{outcome="answered"} 1' in text
+    assert 'chat_outcomes_total{outcome="fallback"} 2' in text
+    assert 'chat_outcomes_total{outcome="error"} 1' in text
+    assert 'chat_fallbacks_total{reason="needs_human"} 1' in text
+    assert 'chat_fallbacks_total{reason="ungrounded_number"} 1' in text
+    assert 'chat_errors_total{kind="llm_unavailable"} 1' in text
+    assert 'llm_tokens_total{direction="input"} 300' in text
+    assert 'llm_tokens_total{direction="output"} 60' in text
+    assert 'http_responses_total{path="/chat",status="200"} 3' in text
+    assert 'http_responses_total{path="/chat",status="401"} 1' in text
+    assert 'http_responses_total{path="/chat",status="502"} 1' in text
+    assert "chat_duration_seconds_count 4" in text
+    assert "llm_daily_token_budget 5000" in text
+    assert "llm_daily_tokens_used 360" in text
+
+
+def test_unknown_paths_share_one_metric_label():
+    client = client_for()
+    client.get("/wp-admin/setup.php")
+    client.get("/.env")
+
+    assert 'http_responses_total{path="other",status="404"} 2' in client.get("/metrics").text
+
+
+def test_chat_degrades_to_the_fallback_when_the_daily_budget_is_spent():
+    client = client_for(
+        final("A troca é em até 7 dias corridos.", citations=(TROCA,)), daily_token_budget=100
+    )
+
+    first = client.post("/chat", json=QUESTION).json()
+    second = client.post("/chat", json=QUESTION)
+
+    assert first["fallback"] is False
+    assert second.status_code == 200 and second.json()["fallback"] is True
+    assert 'chat_fallbacks_total{reason="budget_exhausted"} 1' in client.get("/metrics").text
+
+
 # --- chat ----------------------------------------------------------------------
 
 

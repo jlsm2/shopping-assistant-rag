@@ -1,4 +1,4 @@
-"""HTTP API: POST /chat and GET /health."""
+"""HTTP API: POST /chat, GET /health and GET /metrics."""
 
 import hmac
 import ipaddress
@@ -13,15 +13,17 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.assistant import Assistant
+from app.budget import TokenBudget
 from app.catalog import JsonCatalog
 from app.config import Settings, Store
 from app.guard import MAX_INPUT_CHARS, InvalidInput
-from app.llm import LLMClient, LLMError, LLMRateLimited, LLMUnavailable
+from app.llm import LLMClient, LLMError, LLMRateLimited, LLMUnavailable, Usage
 from app.retrieval import Index, load_chunks
+from app.telemetry import Metrics, accept_request_id, request_id
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ MAX_TRACKED_CLIENTS = 10_000
 DEFAULT_RETRY_AFTER_SECONDS = 30
 END_USER_HEADER = "x-end-user-id"
 MAX_END_USER_CHARS = 128
+KNOWN_PATHS = frozenset({"/chat", "/health", "/metrics"})  # bounds the metric labels
+PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 
 class ChatRequest(BaseModel):
@@ -128,12 +132,30 @@ def build_assistant(settings: Settings, llm: LLMClient) -> Assistant:
         catalog=JsonCatalog(settings.data_dir / "catalog.json"),
         store=Store.load(settings.data_dir / "store.json"),
         max_tool_iterations=settings.max_tool_iterations,
+        timeout_seconds=settings.llm_timeout_seconds,
+        budget=TokenBudget(settings.daily_token_budget),
     )
+
+
+def _map_error(error: Exception) -> tuple[str, HTTPException]:
+    """Metric label and HTTP error for a failed question. No provider detail leaks."""
+    if isinstance(error, InvalidInput):
+        return "invalid_input", HTTPException(422, str(error))
+    if isinstance(error, LLMRateLimited):
+        return "llm_rate_limited", HTTPException(
+            503,
+            "O assistente está sobrecarregado. Tente de novo em instantes.",
+            headers={"Retry-After": str(error.retry_after or DEFAULT_RETRY_AFTER_SECONDS)},
+        )
+    if isinstance(error, LLMUnavailable):
+        return "llm_unavailable", HTTPException(502, "O assistente está indisponível no momento.")
+    return "llm_error", HTTPException(500, "Erro interno.")
 
 
 def create_app(assistant: Assistant | None = None, settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     limiter = RateLimiter(settings.rate_limit_per_minute)
+    metrics = Metrics()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -159,13 +181,20 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
 
     @app.middleware("http")
     async def limit_body_and_set_headers(request: Request, call_next: Callable) -> Response:
+        request.state.request_id = accept_request_id(request.headers.get("x-request-id"))
         # shortcut: trusts Content-Length; enforce the body limit at the reverse proxy too
         declared = request.headers.get("content-length", "0")
         if not (declared.isascii() and declared.isdigit()) or int(declared) > MAX_BODY_BYTES:
-            return JSONResponse({"detail": "Requisição grande demais."}, status_code=413)
-        response = await call_next(request)
+            response: Response = JSONResponse(
+                {"detail": "Requisição grande demais."}, status_code=413
+            )
+        else:
+            response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Request-Id"] = request.state.request_id
+        path = request.url.path if request.url.path in KNOWN_PATHS else "other"
+        metrics.inc("http_responses_total", path=path, status=str(response.status_code))
         return response
 
     app.add_middleware(
@@ -184,6 +213,16 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/metrics", dependencies=[Depends(require_service_token)])
+    def prometheus_metrics(request: Request) -> PlainTextResponse:
+        budget = request.app.state.assistant.budget
+        gauges = (
+            {"llm_daily_token_budget": budget.daily_limit, "llm_daily_tokens_used": budget.used()}
+            if budget
+            else {}
+        )
+        return PlainTextResponse(metrics.render(gauges), media_type=PROMETHEUS_CONTENT_TYPE)
+
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_service_token)])
     def chat(body: ChatRequest, request: Request) -> ChatResponse:
         # Every request comes from the store backend, so its IP says nothing
@@ -198,25 +237,39 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
                 "Muitas mensagens em pouco tempo. Tente de novo em instantes.",
                 headers={"Retry-After": str(math.ceil(wait))},
             )
+        request_id.set(request.state.request_id)
+        started = time.monotonic()
+
+        def record(outcome: str, reason: str | None, usage: Usage) -> None:
+            """One log line and the metrics for this question. Never the message."""
+            seconds = time.monotonic() - started
+            metrics.observe(seconds)
+            metrics.inc("chat_outcomes_total", outcome=outcome)
+            metrics.inc("llm_tokens_total", usage.input_tokens, direction="input")
+            metrics.inc("llm_tokens_total", usage.output_tokens, direction="output")
+            logger.info(
+                "chat request_id=%s outcome=%s reason=%s duration_ms=%d tokens_in=%d tokens_out=%d",
+                request.state.request_id,
+                outcome,
+                reason,
+                seconds * 1000,
+                usage.input_tokens,
+                usage.output_tokens,
+            )
+
         try:
             reply = request.app.state.assistant.answer(body.message)
-        except InvalidInput as error:
-            raise HTTPException(422, str(error)) from error
-        except LLMRateLimited as error:
-            logger.warning("llm_error kind=rate_limited")
-            retry_after = error.retry_after or DEFAULT_RETRY_AFTER_SECONDS
-            raise HTTPException(
-                503,
-                "O assistente está sobrecarregado. Tente de novo em instantes.",
-                headers={"Retry-After": str(retry_after)},
-            ) from error
-        except LLMUnavailable as error:
-            logger.warning("llm_error kind=unavailable")
-            raise HTTPException(502, "O assistente está indisponível no momento.") from error
-        except LLMError as error:
-            # The provider message stays in the server log, never in the response.
-            logger.exception("llm_error kind=other")
-            raise HTTPException(500, "Erro interno.") from error
+        except (InvalidInput, LLMError) as error:
+            kind, http_error = _map_error(error)
+            metrics.inc("chat_errors_total", kind=kind)
+            record("error", kind, Usage())
+            if kind == "llm_error":
+                # The provider message stays in the server log, never in the response.
+                logger.exception("llm_error request_id=%s", request.state.request_id)
+            raise http_error from error
+        if reply.fallback:
+            metrics.inc("chat_fallbacks_total", reason=reply.reason or "unknown")
+        record("fallback" if reply.fallback else "answered", reply.reason, reply.usage)
         return ChatResponse(
             answer=reply.answer,
             sources=[Source(id=chunk.id, title=chunk.title) for chunk in reply.sources],
