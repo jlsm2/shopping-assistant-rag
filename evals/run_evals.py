@@ -17,6 +17,7 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,8 @@ from app import guard
 from app.assistant import Assistant, AssistantReply
 from app.catalog import JsonCatalog
 from app.config import Settings, Store
-from app.llm import LLMError, LLMRateLimited
+from app.conversations import Turn
+from app.llm import LLMError, LLMRateLimited, Usage
 from app.prompts import CANARY
 from app.providers import build_llm
 from app.retrieval import Index, load_chunks, normalize
@@ -34,13 +36,15 @@ ROOT = Path(__file__).resolve().parent
 CASES_PATH = ROOT / "cases.jsonl"
 FIXTURES_DIR = ROOT / "fixtures"
 RESULTS_DIR = ROOT / "results"
-CASE_TYPES = ("answer", "product", "out_of_scope", "injection")
+CASE_TYPES = ("answer", "product", "out_of_scope", "injection", "followup")
+IN_SCOPE_TYPES = ("answer", "product", "followup")  # legitimate questions: no fallback
 GROUNDING_REASONS = frozenset(
     {
         "unknown_citation",
         "unknown_product",
         "no_evidence_cited",
         "ungrounded_number",
+        "ungrounded_price",
         "ungrounded_code",
         "ungrounded_contact",
         "sensitive_request",
@@ -115,7 +119,7 @@ def grade(
     """Problems found in one reply. Empty means the case passed."""
     problems = []
     answer = reply.answer
-    if case["type"] in ("answer", "product") and reply.fallback:
+    if case["type"] in IN_SCOPE_TYPES and reply.fallback:
         problems.append(f"unexpected fallback ({reply.reason})")
     if "expect_fallback" in case and reply.fallback != case["expect_fallback"]:
         problems.append(f"fallback={reply.fallback}, expected {case['expect_fallback']}")
@@ -185,10 +189,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, float]:
         return sum(row["passed"] for row in of_type) / len(of_type) if of_type else 0.0
 
     fallbacks = [row for row in rows if row["fallback"]]
-    in_scope = [row for row in rows if row["type"] in ("answer", "product")]
+    in_scope = [row for row in rows if row["type"] in IN_SCOPE_TYPES]
     return {
         "answer_accuracy": pass_rate("answer"),
         "product_hit_rate": pass_rate("product"),
+        # Follow-ups ("e para o Sul?") answered right with the earlier turns in mind.
+        "followup_accuracy": pass_rate("followup"),
         # Recall: out-of-scope questions that got the fallback.
         "out_of_scope_fallback_rate": pass_rate("out_of_scope"),
         # Precision: fallbacks that were not a legitimate question being refused.
@@ -213,18 +219,33 @@ DEFAULT_RATE_LIMIT_WAIT_SECONDS = 15
 MAX_RATE_LIMIT_WAIT_SECONDS = 60
 
 
-def answer_patiently(assistant: Assistant, question: str, sleep=time.sleep) -> AssistantReply:
+def answer_patiently(
+    assistant: Assistant, question: str, history: tuple[Turn, ...] = (), sleep=time.sleep
+) -> AssistantReply:
     """Free tiers cap tokens per minute: a short wait is quota, not a failed case.
     A long wait (the daily quota is spent) still fails it."""
     for _ in range(RATE_LIMIT_RETRIES):
         try:
-            return assistant.answer(question)
+            return assistant.answer(question, history)
         except LLMRateLimited as error:
             wait = error.retry_after or DEFAULT_RATE_LIMIT_WAIT_SECONDS
             if wait > MAX_RATE_LIMIT_WAIT_SECONDS:
                 raise
             sleep(wait)
-    return assistant.answer(question)
+    return assistant.answer(question, history)
+
+
+def answer_conversation(assistant: Assistant, case: dict[str, Any]) -> AssistantReply:
+    """Ask the case's earlier questions first, as one conversation, then its question.
+    The usage covers every turn."""
+    history: tuple[Turn, ...] = ()
+    usage = Usage()
+    for earlier in case.get("history", []):
+        reply = answer_patiently(assistant, earlier, history)
+        usage += reply.usage
+        history = (*history, reply.turn) if reply.turn else history
+    reply = answer_patiently(assistant, case["question"], history)
+    return replace(reply, usage=usage + reply.usage)
 
 
 def run_cases(
@@ -246,7 +267,7 @@ def run_cases(
             "usage": [0, 0],
         }
         try:
-            reply = answer_patiently(assistant, case["question"])
+            reply = answer_conversation(assistant, case)
         except (LLMError, guard.InvalidInput) as error:
             return {**row, "passed": False, "problems": [f"error: {type(error).__name__}"]}
         problems = grade(case, reply, store.allowed_domains, store_prices, product_prices)

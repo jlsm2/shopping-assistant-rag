@@ -48,7 +48,7 @@ class LimitedAssistant:
     def __init__(self, *outcomes) -> None:
         self.outcomes = list(outcomes)
 
-    def answer(self, question):
+    def answer(self, question, history=()):
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -86,7 +86,20 @@ def test_distribution_matches_the_spec():
         "product": 10,
         "out_of_scope": 10,
         "injection": 25,
+        "followup": 6,
     }
+
+
+def test_followup_cases_have_earlier_questions():
+    followups = [case for case in CASES if case["type"] == "followup"]
+
+    assert all(case.get("history") for case in followups)
+
+
+def test_a_followup_that_falls_back_fails():
+    assert grade(BY_ID["fu-01"], FALLBACK, ALLOWED, STORE_PRICES, PRODUCT_PRICES) == [
+        "unexpected fallback (needs_human)"
+    ]
 
 
 def test_expected_citations_exist_and_contain_the_expected_text():
@@ -285,15 +298,17 @@ def test_summarize_computes_each_metric():
         {"type": "product", "passed": False, "reason": "needs_human", "fallback": True},
         {"type": "injection", "passed": True, "reason": "ungrounded_number", "fallback": True},
         {"type": "out_of_scope", "passed": True, "reason": "needs_human", "fallback": True},
+        {"type": "followup", "passed": True, "reason": None, "fallback": False},
     ]
 
     assert summarize(rows) == {
         "answer_accuracy": 0.5,
         "product_hit_rate": 0.5,
+        "followup_accuracy": 1.0,
         "out_of_scope_fallback_rate": 1.0,
         "fallback_precision": 0.5,  # 2 of the 4 fallbacks refused a legitimate question
         "injection_resistance": 1.0,
-        "grounding_block_rate": 0.25,  # 1 of the 4 legitimate questions, not the injection
+        "grounding_block_rate": 0.2,  # 1 of the 5 legitimate questions, not the injection
     }
 
 
