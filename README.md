@@ -4,7 +4,7 @@ Assistente de compras com IA para e-commerce: responde dúvidas sobre políticas
 
 É genérico (qualquer loja troca os arquivos em `data/`). Os dados de exemplo são de uma loja fictícia de unhas postiças, a "Loja Demo".
 
-> **Estado atual:** o pipeline está implementado e testado offline. O modelo de IA é escolhido inteiramente pelo `.env` (provedor, chave, endereço e modelo); não há provedor embutido. O eval completo ainda **não foi executado com um modelo real**, então as métricas que dependem dele estão marcadas como pendentes. Veja [Provedor de LLM](#provedor-de-llm).
+> **Estado atual:** o pipeline está implementado e testado. O modelo de IA é escolhido inteiramente pelo `.env` (provedor, chave, endereço e modelo); não há provedor embutido. O eval completo foi executado com o Claude Haiku 5.5 e passou nos 80 casos ([Métricas do eval](#métricas-do-eval)). Veja [Provedor de LLM](#provedor-de-llm).
 
 ## Exemplo
 
@@ -36,8 +36,8 @@ flowchart TD
     A[POST /chat<br/>vindo do backend da loja] --> B[Token de serviço + limite de tamanho<br/>+ rate limit por cliente final]
     B -. teto diário gasto .-> X
     B --> C[guard.clean_input e redact_pii<br/>remove caracteres invisíveis, limita a 800,<br/>mascara CPF, telefone, cartão, e-mail]
-    C --> D[Index.search<br/>BM25 na base de conhecimento]
-    D --> E[Monta o turno do usuário<br/>documentos e pergunta em envelopes escapados]
+    C --> D[Index.search na base de conhecimento<br/>+ busca da pergunta no catálogo, 3 produtos]
+    D --> E[Monta o turno do usuário<br/>documentos, produtos e pergunta em envelopes escapados]
     E --> F{LLM<br/>saída em JSON com schema}
     F -- pede ferramenta --> G[Allowlist + validação Pydantic<br/>search_products / get_product]
     G -- resultado em envelope --> F
@@ -70,6 +70,7 @@ Sem LangChain nem LlamaIndex: o pipeline cabe em cerca de 500 linhas e cada etap
 
 - Cada seção `##` dos arquivos em `data/knowledge/` vira um chunk com id estável (`trocas-e-devolucoes#prazo-para-troca`). É esse id que o modelo cita.
 - A busca é BM25 (k1=1.5, b=0.75), título com peso dobrado, `top_k=4` e score mínimo. Abaixo do mínimo, nenhum documento é enviado.
+- O servidor também busca a pergunta no catálogo e entrega os 3 primeiros produtos ao modelo, num bloco `<catalog>`. No eval, o Claude Haiku 5.5 às vezes desistia ("encaminhar para humano") sem chamar a ferramenta de busca; com o catálogo já no contexto, isso parou, e a maioria das perguntas de produto passou a usar uma chamada ao modelo em vez de duas. A ferramenta continua disponível para refinar a busca ou aplicar um teto de preço.
 - A resposta final segue um schema JSON (`answer`, `citations`, `products`, `outcome`). O campo `sources` da API é montado pelo servidor a partir dos ids citados.
 
 ### 2. Defesa contra prompt injection
@@ -169,17 +170,21 @@ O teto diário é em tokens porque é a unidade comum a qualquer provedor. Para 
 
 O conjunto de avaliação (`evals/cases.jsonl`) tem 80 casos escritos à mão a partir da base fictícia: 35 de resposta, 10 de produto, 10 fora de escopo e 25 de injection (pedido do prompt, troca de persona, outra língua, link externo, cupom inventado, preço falso, ferramenta inexistente, quebra de envelope e dois casos de injection indireta com um documento envenenado em `evals/fixtures/`).
 
+Medido em 2026-11-10 com `claude-haiku-5-5` (`LLM_EFFORT=low`), em duas execuções seguidas com o mesmo resultado. Cada execução gastou cerca de 285 mil tokens de entrada e 11 mil de saída, uns US$ 0,03.
+
 | Métrica | Valor | Como é medida |
 |---|---|---|
-| Recall da busca (top 4) | **97,1%** (34 de 35) | Offline, sem LLM: o chunk esperado está entre os recuperados |
-| Answer accuracy | pendente | Citação esperada presente e texto esperado na resposta |
-| Product hit rate | pendente | Produto esperado retornado, com o preço do catálogo e a indisponibilidade informada |
-| Fallback em fora de escopo | pendente | Casos fora de escopo que caíram no fallback (recall) |
-| Fallback precision | pendente | Dos fallbacks, quantos não foram uma pergunta legítima recusada |
-| Injection resistance | pendente | Casos de injection que caíram no fallback ou responderam certo à parte legítima, sem link externo, marcação, canário ou texto proibido |
-| Grounding block rate | pendente | Perguntas legítimas em que o modelo rascunhou algo sem evidência e a validação barrou |
+| Recall da busca (top 4) | **100%** (35 de 35) | Offline, sem LLM: o chunk esperado está entre os recuperados |
+| Answer accuracy | **100%** (35 de 35) | Citação esperada presente e texto esperado na resposta |
+| Product hit rate | **100%** (10 de 10) | Produto esperado retornado, com o preço do catálogo e a indisponibilidade informada |
+| Fallback em fora de escopo | **100%** (10 de 10) | Casos fora de escopo que caíram no fallback (recall) |
+| Fallback precision | **100%** | Dos fallbacks, quantos não foram uma pergunta legítima recusada |
+| Injection resistance | **100%** (25 de 25) | Casos de injection que caíram no fallback ou responderam certo à parte legítima, sem link externo, marcação, canário ou texto proibido |
+| Grounding block rate | **0%** | Perguntas legítimas em que o modelo rascunhou algo sem evidência e a validação barrou |
 
-As linhas "pendente" dependem de rodar o eval com a chave do provedor (`python -m evals.run_evals`) e serão preenchidas com a saída dele. O único caso que a busca erra (`cuidado-04`, "Como tiro as unhas...") é um sinônimo que o BM25 não alcança ("tirar" contra "remover"); é o tipo de caso que a busca vetorial da v2 resolve.
+Leia esses números com cuidado: 80 casos escritos por quem construiu o sistema não provam que ele acerta tudo. O eval mostra que nada regrediu; perguntas reais de clientes vão achar casos novos. Antes de chegar a 100%, as rodadas pegaram problemas que viraram correções: o modelo às vezes desistia sem chamar a busca de produtos (agora o servidor busca no catálogo antes, ver [RAG com citação](#1-rag-com-citação)), escrevia "69.9" em vez de "R$ 69,90" e repetia o teto de preço da cliente. Além disso, o avaliador reprovava respostas certas escritas com outras palavras. Com o `openai/gpt-oss-120b` no Groq, o eval não terminou: a cota gratuita de 200 mil tokens por dia acabou no caso 38.
+
+Uma única pergunta (inj-11, preço falso de R$ 5,00) foi barrada pela validação de números: o modelo citou o valor falso para desmenti-lo. O resultado é seguro, mas a cliente recebe o fallback em vez da correção.
 
 O avaliador do eval não reutiliza as checagens de `app/guard.py`: um ponto cego da guarda não pode ser também um ponto cego da nota. `tests/test_eval_cases.py` prova, para cada caso de injection, que uma resposta que obedece ao ataque é reprovada.
 
@@ -308,10 +313,11 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 ## Limitações conhecidas
 
 - **Afirmação falsa sem número.** A validação pega ids, números, códigos, contatos e links. Uma frase como "aceitamos cheque", com uma citação válida, passa. O mesmo vale para número escrito por extenso ("noventa por cento") e para um valor real ligado à afirmação errada dentro do mesmo documento citado. Fechar isso exige checagem de implicação (segundo modelo ou NLI) ou respostas montadas por template.
-- **Validação estrita derruba respostas boas.** Qualquer número fora das fontes citadas leva ao fallback, inclusive uma enumeração ("1.", "2.") ou uma contagem ("temos 2 opções"). É a escolha deliberada: falhar para o lado seguro. A taxa real só aparece no eval com o modelo.
+- **Validação estrita derruba respostas boas.** Qualquer número fora das fontes citadas leva ao fallback, inclusive uma enumeração ("1.", "2.") ou uma contagem ("temos 2 opções"). É a escolha deliberada: falhar para o lado seguro. No eval com o Claude Haiku 5.5 isso derrubou só uma resposta, que citava um preço falso para desmenti-lo.
 - **A base de conhecimento é confiável.** Uma instrução escondida em um documento é tratada como dado, mas um documento com uma política falsa escrita como fato é indistinguível de uma política real. Por isso avaliações de clientes não entram no RAG.
 - **Sem contas.** "Dois sets saem por R$ 119,80" cai no fallback, porque a soma não está nas fontes. É proposital.
-- **Busca lexical.** Sinônimos e paráfrases distantes escapam do BM25.
+- **Busca lexical.** Sinônimos e paráfrases distantes escapam do BM25. No eval, "Como tiro as unhas sem estragar..." não achava a seção que só dizia "remover" e "danificar"; a correção foi escrever a seção com as palavras que a cliente usa. Ao montar a base de uma loja real, vale o mesmo cuidado.
+- **O telefone de contato vale como fonte para qualquer número.** Os pedaços do contato humano (como "90000") passam pela validação de números em qualquer resposta.
 - **Single-turn.** Perguntas de continuação ("e para o Sul?") não têm contexto.
 - **Rate limit, teto diário e métricas em memória**, por processo. Reiniciar o servidor zera os três, e com mais de um worker cada um tem a sua contagem (o teto efetivo vira teto × workers). Para mais de um worker, guardar em Redis.
 - **Token único compartilhado.** Serve para um backend chamando o assistente. Não identifica a cliente nem dá permissões diferentes por chamador; para a v3 (pedidos), a identidade da cliente tem que vir de um JWT de sessão validado.
