@@ -333,6 +333,10 @@ def test_price_followed_by_another_number_is_not_misread(answer):
             (CUPOM.id,),
             (NUDE["id"],),
         ),
+        # Security review: other spellings of an amount slipped past the rule.
+        ("O Set Nude Curto sai por 5,00 reais. No Pix tem 5% de desconto.", (CUPOM.id,), ()),
+        ("O Set Nude Curto sai por R $5,00. No Pix tem 5% de desconto.", (CUPOM.id,), ()),
+        ("O Set Nude Curto sai por 5 Reais. No Pix tem 5% de desconto.", (CUPOM.id,), ()),
     ],
 )
 def test_an_amount_in_reais_must_be_an_amount_in_reais_in_the_sources(answer, citations, products):
@@ -356,10 +360,18 @@ def test_amounts_in_reais_from_the_sources_pass(answer, citations, products):
     assert grounding(answer, citations, products, proof) is None
 
 
-def capped(*caps: float, products=(NUDE, COLA)) -> guard.Evidence:
+def capped(*caps: float, products=(NUDE, COLA), stated: tuple[float, ...] | None = None):
+    """Evidence with the caps the searches used; by default the customer stated them."""
     proof = evidence(products=products)
     proof.price_caps.update(caps)
+    proof.customer_numbers.update(guard.canonical_number(f"{n:f}") for n in (stated or caps))
     return proof
+
+
+def test_a_cap_the_customer_never_stated_grounds_nothing():
+    proof = capped(299.9, stated=(70,))
+
+    assert grounding("De R$ 299,90 por R$ 59,90.", (), (NUDE["id"],), proof) == "ungrounded_number"
 
 
 def test_price_cap_used_by_the_search_grounds_the_cap_when_every_product_fits():

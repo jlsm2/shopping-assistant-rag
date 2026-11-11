@@ -171,7 +171,10 @@ def leaks_prompt(text: str, system_prompt: str, canary: str) -> bool:
 # --- grounding ---------------------------------------------------------------
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
-_AMOUNT = re.compile(r"R\$\s*(\d+(?:[.,]\d+)*)")
+# "R$ 5,00", "R $5", "5,00 reais", "1 real".
+_AMOUNT = re.compile(
+    r"R\s*\$\s*(\d+(?:[.,]\d+)*)|(\d+(?:[.,]\d+)*)\s*(?:reais|real)\b", re.IGNORECASE
+)
 _THOUSANDS = re.compile(r"\d{1,3}(?:\.\d{3})+")
 _CODE = re.compile(r"[a-z0-9]+")
 _SENSITIVE = re.compile(r"\b(?:senha|cvv|cpf|codigo de seguranca|(?:numero|dados) do cartao)\b")
@@ -195,7 +198,7 @@ def canonical_number(raw: str) -> str:
 
 def extract_amounts(text: str) -> set[str]:
     """Numbers written as an amount in reais ("R$ 59,90", "R$150")."""
-    return {canonical_number(raw) for raw in _AMOUNT.findall(text)}
+    return {canonical_number(before or after) for before, after in _AMOUNT.findall(text)}
 
 
 def extract_numbers(text: str) -> set[str]:
@@ -237,6 +240,9 @@ class Evidence:
     products: dict[str, dict[str, Any]] = field(default_factory=dict)  # public views
     store_facts: tuple[str, ...] = ()  # always true, e.g. the human contact
     price_caps: set[float] = field(default_factory=set)  # max_price the searches used
+    # Numbers the customer typed in this conversation. A cap counts only if she
+    # gave it: the model must not pick one to invent a "was R$ 299,90" price.
+    customer_numbers: set[str] = field(default_factory=set)
 
     def cited_texts(self, citations: Iterable[str], products: Iterable[str]) -> list[str]:
         """Only what the answer cites counts, so a number cannot be borrowed
@@ -252,7 +258,8 @@ def _true_price_caps(products: list[str], evidence: Evidence) -> set[str]:
     if not products:
         return set()
     highest = max(evidence.products[product]["price"] for product in products)
-    return {canonical_number(f"{cap:f}") for cap in evidence.price_caps if cap >= highest}
+    caps = {canonical_number(f"{cap:f}") for cap in evidence.price_caps if cap >= highest}
+    return caps & evidence.customer_numbers
 
 
 def validate_grounding(

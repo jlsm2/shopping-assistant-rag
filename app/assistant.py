@@ -1,6 +1,7 @@
 """Orchestration: retrieve -> tool loop -> validate.
 
-Single-turn on purpose: history sent by the client could forge assistant turns.
+Conversation history comes from the server's ConversationStore, never from the
+client, which could otherwise forge assistant turns.
 """
 
 import logging
@@ -45,7 +46,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "products": {"type": "array", "items": {"type": "string"}},
         "outcome": {
             "type": "string",
-            "enum": ["answered", "smalltalk", "off_topic", "needs_human"],
+            "enum": ["answered", "smalltalk", "goodbye", "off_topic", "needs_human"],
         },
     },
     "required": ["answer", "citations", "products", "outcome"],
@@ -59,7 +60,7 @@ class ModelAnswer(BaseModel):
     answer: str
     citations: list[str]
     products: list[str]
-    outcome: Literal["answered", "smalltalk", "off_topic", "needs_human"]
+    outcome: Literal["answered", "smalltalk", "goodbye", "off_topic", "needs_human"]
 
 
 class SearchProductsInput(BaseModel):
@@ -208,11 +209,11 @@ class Assistant:
         if parsed.outcome == "off_topic":
             # Canned too: steer back to the store without model-written claims.
             return self._fallback("off_topic", usage, self._store.off_topic_message)
+        # Canned text: a greeting or a goodbye never carries model-written claims.
         if parsed.outcome == "smalltalk":
-            # Canned text: a greeting never carries model-written claims. Mid-
-            # conversation it is a thanks or a goodbye, not a first hello.
-            message = self._store.closing_message if history else self._store.greeting_message
-            return AssistantReply(answer=message, usage=usage)
+            return AssistantReply(answer=self._store.greeting_message, usage=usage)
+        if parsed.outcome == "goodbye":
+            return AssistantReply(answer=self._store.closing_message, usage=usage)
         if len(parsed.answer) > guard.MAX_ANSWER_CHARS:
             return self._fallback("answer_too_long", usage)
         try:
@@ -269,10 +270,12 @@ class Assistant:
         # Models sometimes give up without calling the search, so the server
         # searches the question first; the model can still search again.
         matches = self._catalog_matches(question, remembered)
+        typed = " ".join([*(turn.question for turn in history), question])
         evidence = guard.Evidence(
             chunks={chunk.id: chunk for chunk in chunks},
             products={view["id"]: view for view in matches},
             store_facts=(self._store.human_contact,),
+            customer_numbers=guard.extract_numbers(typed),
         )
         return evidence, _render_user_turn(history, chunks, matches, question)
 

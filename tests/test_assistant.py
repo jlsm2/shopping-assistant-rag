@@ -92,6 +92,32 @@ def test_answer_may_repeat_the_price_cap_the_search_used(make_assistant):
     assert reply.fallback is False, reply.reason
 
 
+def test_a_price_cap_the_customer_never_gave_is_not_evidence(make_assistant):
+    # Security review: the model picked the cap itself to invent a "was" price.
+    assistant, _ = make_assistant(
+        tool_calls(("search_products", {"query": "nude", "max_price": 299.9})),
+        final("O Set Nude Curto de R$ 299,90 sai hoje por R$ 59,90!", products=("nude-curto",)),
+    )
+
+    reply = assistant.answer("Tem set nude?")
+
+    assert reply.reason == "ungrounded_number"
+
+
+def test_a_price_cap_given_earlier_in_the_conversation_still_counts(make_assistant):
+    asked = Turn("Tem algum set nude até R$ 70?", "Tenho dois.", product_ids=("nude-curto",))
+    assistant, _ = make_assistant(
+        tool_calls(SEARCH_NUDE),
+        final(
+            "O mais barato até R$ 70 é o Set Nude Curto, por R$ 59,90.", products=("nude-curto",)
+        ),
+    )
+
+    reply = assistant.answer("Qual o mais barato?", history=(asked,))
+
+    assert reply.fallback is False, reply.reason
+
+
 def test_a_price_cap_does_not_ground_an_unrelated_number(make_assistant):
     assistant, _ = make_assistant(
         tool_calls(SEARCH_NUDE),
@@ -211,11 +237,12 @@ def test_reply_carries_the_turn_to_remember_with_personal_data_masked(make_assis
     )
 
 
-def test_thanks_in_the_middle_of_a_conversation_gets_the_closing_message(make_assistant, store):
-    assistant, _ = make_assistant(final(outcome="smalltalk"), final(outcome="smalltalk"))
+def test_thanks_gets_the_closing_message_and_a_hello_the_greeting(make_assistant, store):
+    assistant, _ = make_assistant(final(outcome="goodbye"), final(outcome="smalltalk"))
 
     assert assistant.answer("obrigada!", history=(NUDE_TURN,)).answer == store.closing_message
-    assert assistant.answer("oi").answer == store.greeting_message
+    # A new "oi" mid-conversation is still a hello, not a goodbye.
+    assert assistant.answer("oi", history=(NUDE_TURN,)).answer == store.greeting_message
 
 
 def test_a_product_named_in_the_answer_is_returned_even_if_not_listed(make_assistant):
