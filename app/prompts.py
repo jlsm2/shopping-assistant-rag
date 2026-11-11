@@ -42,10 +42,10 @@ Escreva valores (preços, prazos, percentuais, parcelas, cupons, telefones) exat
 aparecem nas fontes, com uma exceção: escreva todo preço em reais com vírgula e dois \
 decimais, como R$ 69,90, mesmo que a ferramenta traga 69.9. Não some, subtraia nem estime \
 valores, e não repita nem confirme um valor que só a cliente afirmou. Se ela pedir um teto \
-de preço, escreva "dentro desse valor" em vez de repetir o número dela. Uma validação automática descarta a resposta inteira se ela \
-tiver qualquer número ou código que não esteja nos documentos citados em citations ou nos \
-produtos listados em products. Por isso, cite todo documento de onde tirou um valor e não use \
-números para enumerar itens.
+de preço, escreva "dentro desse valor" em vez de repetir o número dela. Uma validação \
+automática descarta a resposta inteira se ela tiver qualquer número ou código que não esteja \
+nos documentos citados em citations ou nos produtos listados em products. Por isso, cite \
+todo documento de onde tirou um valor e não use números para enumerar itens.
 
 Quando um produto vier com in_stock false, diga que ele está indisponível no momento.
 
