@@ -99,7 +99,7 @@ O prompt instrui o modelo a responder só com as fontes, mas quem decide é o c�
 2. `products` tem um id que não veio de uma ferramenta nesta pergunta;
 3. a resposta não cita nenhum documento nem produto;
 4. **qualquer número** da resposta não aparece nos documentos citados nem nos produtos listados. Não importa a unidade nem o símbolo: `R$ 5,00`, `5,00`, `1 real`, `90 dias`, `99,5%` e `12x` são tratados do mesmo jeito, e `59,90`, `59.90` e `59.9` contam como o mesmo valor;
-5. **um valor em reais** (`R$ 5,00`) não é um valor em reais das fontes citadas nem o preço de um produto citado. Sem essa regra, "sai por R$ 5,00" passava se a resposta também citasse "5% de desconto no Pix": o eval pegou exatamente isso;
+5. **um valor em reais** (`R$ 5,00`, `R $5`, `5,00 reais`, `1 real`) não é um valor em reais das fontes citadas nem o preço de um produto citado. Sem essa regra, "sai por R$ 5,00" passava se a resposta também citasse "5% de desconto no Pix": o eval pegou exatamente isso. O teto de preço da cliente ("até R$ 70") só vale se ela escreveu esse número na conversa e todos os produtos citados estão dentro dele; sem essa condição, o modelo podia buscar com um teto inventado e afirmar "de R$ 299,90 por R$ 59,90" (achado da revisão de segurança);
 6. algum código que mistura letras e dígitos (cupom, chave) não aparece nas fontes citadas;
 7. algum número longo (telefone, chave Pix, CPF) não é o contato da loja nem está nas fontes, mesmo que cada pedaço dele apareça em algum lugar;
 8. a resposta pede senha, CVV, CPF ou dados do cartão sem que a fonte citada fale disso;
@@ -112,7 +112,7 @@ Além disso:
 - Preço e disponibilidade na resposta HTTP vêm do catálogo, não do texto do modelo. O modelo só recebe `public_view()`: `in_stock` booleano, sem estoque numérico nem custo.
 - Se um produto citado está sem estoque e a resposta não diz isso, o servidor acrescenta "Indisponível no momento: ...".
 - Se uma guarda falhar com exceção, a resposta cai no fallback (falha fechada).
-- Cumprimentos ("oi", "obrigada") recebem uma saudação fixa de `store.json`, e assuntos que não são da loja ("Qual a capital da Austrália?") ou mensagens que só tentam manipular o assistente recebem outra mensagem fixa, que traz a conversa de volta para as unhas. Nos dois casos o texto do modelo é descartado.
+- Cumprimentos ("oi") recebem uma saudação fixa de `store.json`, agradecimentos e despedidas ("obrigada", "tchau") uma despedida fixa, e assuntos que não são da loja ("Qual a capital da Austrália?") ou mensagens que só tentam manipular o assistente recebem outra mensagem fixa, que traz a conversa de volta para as unhas. Nos dois casos o texto do modelo é descartado.
 - O motivo de cada fallback é logado (sem a mensagem da cliente) e alimenta as métricas.
 
 ## Persona de vendedora
@@ -145,10 +145,12 @@ curl -s localhost:8000/chat -H "Authorization: Bearer $SERVICE_TOKEN" -H 'X-End-
 ```
 
 - **Onde fica o histórico:** no servidor (`app/conversations.py`). O cliente só tem o id, que é aleatório (32 caracteres) e não dá para adivinhar.
-- **De quem é a conversa:** da cliente que a começou, identificada pelo mesmo `X-End-User-Id` do rate limit. Outra cliente que mande o mesmo id recebe uma conversa nova e vazia. Um id desconhecido ou expirado também começa do zero, e a resposta traz o id novo. **Sem o `X-End-User-Id`, todas as conversas pertencem ao IP do backend** e a única proteção passa a ser o segredo do id: o backend nunca deve mostrar o id de uma cliente para outra.
-- **O que é guardado:** as últimas 4 trocas, com a pergunta já sem dados pessoais e a resposta que a cliente recebeu (nunca um rascunho barrado). Uma conversa parada há 30 minutos é esquecida; no máximo 10 mil conversas ficam na memória, e as mais antigas saem primeiro.
+- **De quem é a conversa:** da cliente que a começou, identificada pelo `X-End-User-Id` inteiro (o servidor guarda um hash dele). Outra cliente que mande o mesmo id recebe uma conversa nova e vazia. Um id desconhecido ou expirado também começa do zero, e a resposta traz o id novo.
+- **Sem `X-End-User-Id`, nada é lembrado:** cada mensagem é respondida sozinha e a resposta traz `"conversation_id": null`. Antes da revisão de segurança, todas essas conversas pertenciam ao IP do backend, e quem tivesse o id de outra cliente lia o histórico dela.
+- **Use um id de sessão por cliente, não o IP.** Vários clientes atrás do mesmo IP (rede móvel, empresa) dividiriam a conversa.
+- **O que é guardado:** as últimas 4 trocas, com a pergunta já sem documentos, telefones, cartões e e-mails, e a resposta que a cliente recebeu (nunca um rascunho barrado). Nomes e endereços não são mascarados: ficam até 30 minutos na memória e são reenviados ao provedor nas mensagens seguintes da mesma conversa. Uma conversa parada há 30 minutos é esquecida; no máximo 10 mil conversas ficam na memória, e as mais antigas saem primeiro. No pior caso isso passa de 200 MB, mas com o teto diário de tokens padrão (2 milhões, cerca de 450 mensagens por dia) a memória nunca chega perto disso.
 - **Como o modelo usa:** o histórico entra como dado em `<conversation_history>`. A busca na base usa a pergunta anterior junto com a atual, porque uma continuação ("e para o Sul?") raramente repete o assunto. Os documentos e produtos citados antes voltam ao contexto; o texto das respostas anteriores nunca vale como fonte.
-- **Custo:** cada mensagem de continuação manda de novo o histórico e o que ele citou. São no máximo 4 trocas curtas, mas o acréscimo por mensagem ainda não foi medido em separado.
+- **Custo:** cada mensagem de continuação manda de novo o histórico e o que ele citou. Medido em 2026-11-11 com o Claude Haiku 5.5, comparando a mesma mensagem com e sem histórico em 11 continuações: **+750 tokens de entrada na mediana** (de +263 a +2.009) sobre uma base de cerca de 4.400, ou seja, de 6% a 46% a mais; no preço do Haiku, menos de US$ 0,0002 por mensagem. O acréscimo cresce com a conversa (+954 na 2ª mensagem, cerca de +2.000 na 5ª e na 6ª) e vem mais dos documentos e produtos que voltam ao contexto do que do texto do histórico.
 
 ## Além das três: acesso, privacidade, custo e operação
 
@@ -161,7 +163,7 @@ O `/chat` não é público. Toda chamada precisa de `Authorization: Bearer <toke
 - Para trocar o token sem derrubar o chat: configure `novo,antigo`, atualize o backend da loja e depois remova o antigo.
 - `GET /health` continua aberto, para o monitoramento.
 
-Como toda chamada passa a vir do mesmo IP (o do backend), o rate limit usa o cabeçalho `X-End-User-Id`: um identificador opaco da cliente (id de sessão ou IP) que o backend informa. **Sem esse cabeçalho, todas as clientes dividem a mesma cota.**
+Como toda chamada passa a vir do mesmo IP (o do backend), o rate limit usa o cabeçalho `X-End-User-Id`: um identificador opaco da cliente (de preferência o id de sessão) que o backend informa. **Sem esse cabeçalho, todas as clientes dividem a mesma cota e o assistente não lembra conversas.**
 
 ### Dados pessoais (LGPD)
 
@@ -352,7 +354,7 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 
 ## Limitações conhecidas
 
-- **Afirmação falsa sem número.** A validação pega ids, números, códigos, contatos e links. Uma frase como "aceitamos cheque", com uma citação válida, passa. O mesmo vale para número escrito por extenso ("noventa por cento") e para um valor real ligado à afirmação errada dentro do mesmo documento citado. Fechar isso exige checagem de implicação (segundo modelo ou NLI) ou respostas montadas por template.
+- **Afirmação falsa sem número.** A validação pega ids, números, códigos, contatos e links. Uma frase como "aceitamos cheque", com uma citação válida, passa. O mesmo vale para número escrito por extenso ("noventa por cento") e para um valor real ligado à afirmação errada dentro do mesmo documento citado: "o Set Nude Curto sai por R$ 30,00 no Pix", citando a FAQ de pagamento (onde R$ 30,00 é a parcela mínima), passa, porque a validação não sabe a que cada valor se refere. O preço exibido no card do produto vem sempre do catálogo. Fechar isso exige checagem de implicação (segundo modelo ou NLI) ou respostas montadas por template.
 - **Validação estrita derruba respostas boas.** Qualquer número fora das fontes citadas leva ao fallback, inclusive uma enumeração ("1.", "2.") ou uma contagem ("temos 2 opções"). É a escolha deliberada: falhar para o lado seguro. No eval com o Claude Haiku 5.5 isso derrubou só uma resposta, que citava um preço falso para desmenti-lo.
 - **A base de conhecimento é confiável.** Uma instrução escondida em um documento é tratada como dado, mas um documento com uma política falsa escrita como fato é indistinguível de uma política real. Por isso avaliações de clientes não entram no RAG.
 - **Sem contas.** "Dois sets saem por R$ 119,80" cai no fallback, porque a soma não está nas fontes. É proposital.
@@ -361,7 +363,7 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 - **Rate limit, teto diário, métricas e conversas em memória**, por processo. Reiniciar o servidor zera os quatro (as clientes perdem o contexto da conversa), e com mais de um worker cada um tem a sua contagem e as suas conversas (o teto efetivo vira teto × workers, e uma continuação que cai em outro worker começa do zero). Para mais de um worker, guardar em Redis.
 - **Memória curta.** Só as últimas 4 trocas e 30 minutos de inatividade. Uma conversa longa esquece o começo.
 - **Token único compartilhado.** Serve para um backend chamando o assistente. Não identifica a cliente nem dá permissões diferentes por chamador; para a v3 (pedidos), a identidade da cliente tem que vir de um JWT de sessão validado.
-- **Máscara de dados pessoais por padrão de texto.** Pega documentos, telefones, cartões e e-mails; não pega nomes nem endereços.
+- **Máscara de dados pessoais por padrão de texto.** Pega documentos, telefones, cartões e e-mails; não pega nomes nem endereços, que também ficam no histórico da conversa por até 30 minutos.
 - **Falsos positivos do filtro de links.** Texto como "fim.Depois" (sem espaço após o ponto) é lido como domínio e leva ao fallback.
 
 ## Roadmap
