@@ -107,6 +107,8 @@ class Settings:
 @dataclass(frozen=True)
 class Store:
     name: str
+    description: str  # what the store sells, as it reads after "a {name},"
+    accessories: str  # add-ons the assistant may suggest, as a comma-separated list
     allowed_domains: tuple[str, ...]
     human_contact: str
     fallback_message: str
@@ -119,6 +121,8 @@ class Store:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return cls(
             name=raw["name"],
+            description=raw["description"],
+            accessories=raw["accessories"],
             allowed_domains=tuple(d.lower() for d in raw["allowed_domains"]),
             human_contact=raw["human_contact"],
             fallback_message=raw["fallback_message"].format(contact=raw["human_contact"]),

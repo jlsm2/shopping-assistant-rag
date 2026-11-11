@@ -1,8 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from app.config import DEFAULT_DATA_DIR, Settings, Store, load_env_file
+from app.prompts import build_system_prompt
 
 
 def test_settings_defaults_when_environment_is_empty(monkeypatch):
@@ -141,3 +143,20 @@ def test_store_fills_contact_and_name_into_the_fixed_messages():
     assert "unhas" in store.off_topic_message
     assert store.closing_message
     assert store.allowed_domains == ("lojademo.example",)
+
+
+def test_system_prompt_describes_the_store_from_its_config_only():
+    demo = Store.load(DEFAULT_DATA_DIR / "store.json")
+    other = replace(
+        demo,
+        name="Café Exemplo",
+        description="uma loja online de cafés especiais",
+        accessories="filtros, moedores",
+    )
+
+    prompt = build_system_prompt(other)
+
+    assert "da Café Exemplo, uma loja online de cafés especiais." in prompt
+    assert prompt.count("(filtros, moedores)") == 2
+    assert "unha" not in prompt.lower()
+    assert "cola" not in prompt.lower()

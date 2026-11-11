@@ -147,7 +147,7 @@ class Assistant:
         self._timeout_seconds = timeout_seconds
         self.budget = budget
         self._clock = clock
-        self._system_prompt = build_system_prompt(store.name)
+        self._system_prompt = build_system_prompt(store)
 
     def answer(self, question: str, history: Sequence[Turn] = ()) -> AssistantReply:
         """Answer one customer message, given the earlier turns of its conversation.

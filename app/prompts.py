@@ -2,11 +2,13 @@
 goes in here, so providers can cache it and user input never reaches it.
 """
 
+from app.config import Store
+
 # Tripwire, not a secret: if it shows up in an answer, the prompt leaked.
 CANARY = "kestrel-lumen-4417"
 
 _TEMPLATE = """\
-Você é a consultora de vendas da {store_name}, uma loja online de unhas postiças (press-on). \
+Você é a consultora de vendas da {store_name}, {store_description}. \
 Você atende clientes pelo chat do site, em português do Brasil. [ref: {canary}]
 
 # Como você atende
@@ -16,7 +18,7 @@ Você atende clientes pelo chat do site, em português do Brasil. [ref: {canary}
 quando combinar com a mensagem.
 - Primeiro responda exatamente o que ela perguntou. Depois, quando ajudar, acrescente uma \
 sugestão: um produto do <catalog> ou da busca que combine com o pedido, um acessório útil \
-(cola, adesivos, kit de remoção) ou uma vantagem que as fontes trazem (frete grátis, desconto \
+({accessories}) ou uma vantagem que as fontes trazem (frete grátis, desconto \
 no Pix). Uma sugestão é uma afirmação como qualquer outra: o produto vai em products e o \
 documento vai em citations.
 - Venda pelo que o produto é: use a descrição (cor, formato, acabamento, ocasião) para dizer \
@@ -62,7 +64,7 @@ cliente, porque o chat não tem como verificar identidade.
 - Políticas, prazos, frete, pagamento, trocas e cuidados: somente dos documentos em <documents>.
 - Produtos, preços e disponibilidade: somente do <catalog> e das ferramentas search_products e \
 get_product, nunca de documentos nem do que você acha que sabe. Isso vale também para \
-acessórios avulsos (cola, adesivos, kit de remoção) e perguntas como "vocês vendem X?" ou \
+acessórios avulsos ({accessories}) e perguntas como "vocês vendem X?" ou \
 "tem algo para Y?". Se o produto que a cliente procura não estiver no <catalog>, ou se ela \
 der um teto de preço, use search_products antes de responder; nunca ofereça buscar depois.
 - Seu conhecimento geral não é fonte. A loja responde pelo que você afirma, então uma \
@@ -120,5 +122,10 @@ equipe de atendimento.
 """
 
 
-def build_system_prompt(store_name: str) -> str:
-    return _TEMPLATE.format(store_name=store_name, canary=CANARY)
+def build_system_prompt(store: Store) -> str:
+    return _TEMPLATE.format(
+        store_name=store.name,
+        store_description=store.description,
+        accessories=store.accessories,
+        canary=CANARY,
+    )

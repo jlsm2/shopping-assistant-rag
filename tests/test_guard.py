@@ -2,11 +2,12 @@ import pytest
 
 from app import guard
 from app.catalog import public_view
+from app.config import DEFAULT_DATA_DIR, Store
 from app.prompts import CANARY, build_system_prompt
 from app.retrieval import Chunk
 
 ALLOWED = ("lojademo.example",)
-PROMPT = build_system_prompt("Loja Demo")
+PROMPT = build_system_prompt(Store.load(DEFAULT_DATA_DIR / "store.json"))
 FRETE = Chunk("frete-e-prazos#frete-gratis", "Frete grátis", "Grátis acima de R$ 150,00 em 7 dias.")
 VALOR = Chunk("frete-e-prazos#valor-do-frete", "Valor do frete", "Frete fixo de R$ 14,90.")
 CUPOM = Chunk("faq#cupom", "Cupom", "Cupom BEMVINDA10 dá 10% de desconto, uma vez por CPF.")

@@ -349,7 +349,7 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 
 ## Como adaptar para outra loja
 
-1. Troque `data/store.json` (nome, domínios permitidos, contato humano e as quatro mensagens fixas: `greeting_message`, `closing_message`, `off_topic_message` e `fallback_message`). Escreva-as no tom da marca: são as únicas frases que o servidor manda sem passar pelo modelo.
+1. Troque `data/store.json`: nome, o que a loja vende, os acessórios que o assistente pode sugerir, domínios permitidos, contato humano e as quatro mensagens fixas (`greeting_message`, `closing_message`, `off_topic_message` e `fallback_message`). `description` completa a frase "Você é a consultora de vendas da {name}, ..." do system prompt (ex.: `"uma loja online de unhas postiças (press-on)"`), e `accessories` é uma lista curta separada por vírgulas (ex.: `"cola, adesivos, kit de remoção"`). Escreva as mensagens fixas no tom da marca: são as únicas frases que o servidor manda sem passar pelo modelo.
 2. Troque os arquivos em `data/knowledge/`. Uma seção `##` por assunto, com valores escritos em algarismos ("7 dias", "R$ 150,00"), porque é contra esse texto que a validação compara.
 3. Troque `data/catalog.json`, ou implemente o `Protocol Catalog` (`search` e `get`) apontando para a sua API. O que quer que o catálogo devolva passa por `public_view()` antes de chegar ao modelo.
 4. Reescreva `evals/cases.jsonl` para a nova base. `tests/test_eval_cases.py` confere que os ids e textos esperados existem.

@@ -1,5 +1,7 @@
 {
   "name": "Loja Demo",
+  "description": "uma loja online de unhas postiças (press-on)",
+  "accessories": "cola, adesivos, kit de remoção",
   "allowed_domains": ["lojademo.example"],
   "human_contact": "(00) 90000-0000",
   "fallback_message": "Essa eu prefiro confirmar com a equipe, pra não te passar nada errado. Chama a gente no WhatsApp {contact} que a gente te ajuda rapidinho!",
