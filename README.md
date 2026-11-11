@@ -6,7 +6,7 @@ As respostas se apoiam nas informações da própria loja. As políticas vêm de
 
 Funciona com qualquer provedor de LLM, escolhido no `.env`, e com qualquer loja: basta trocar os arquivos em `data/`. Os dados de exemplo são de uma loja fictícia de unhas postiças, a "Loja Demo".
 
-> **Estado atual:** implementado e coberto por 455 testes. Avaliado com o Claude Haiku 5.5, passou nos 86 casos do eval ([Métricas do eval](#métricas-do-eval)). Para configurar o modelo, veja [Provedor de LLM](#provedor-de-llm).
+> **Estado atual:** implementado e coberto por 456 testes, com o desenvolvimento pausado; o que falta para uma loja real está em [O que falta](#o-que-falta-para-atender-clientes-de-uma-loja-real). Avaliado com o Claude Haiku 5.5, passou nos 86 casos do eval ([Métricas do eval](#métricas-do-eval)). Para configurar o modelo, veja [Provedor de LLM](#provedor-de-llm).
 
 ## Exemplo
 
@@ -353,6 +353,22 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 2. Troque os arquivos em `data/knowledge/`. Uma seção `##` por assunto, com valores escritos em algarismos ("7 dias", "R$ 150,00"), porque é contra esse texto que a validação compara.
 3. Troque `data/catalog.json`, ou implemente o `Protocol Catalog` (`search` e `get`) apontando para a sua API. O que quer que o catálogo devolva passa por `public_view()` antes de chegar ao modelo.
 4. Reescreva `evals/cases.jsonl` para a nova base. `tests/test_eval_cases.py` confere que os ids e textos esperados existem.
+
+### O que falta para atender clientes de uma loja real
+
+O desenvolvimento está pausado neste ponto (2026-11-11). Trocar os arquivos acima basta para testar com outra loja, mas não para colocar o assistente na frente de clientes. Falta, nesta ordem:
+
+1. **Catálogo ligado à loja.** Hoje só existe o `JsonCatalog`, que lê um arquivo. Para preço e estoque estarem sempre atuais, falta um `HttpCatalog` que implemente o `Protocol Catalog` sobre a API da loja. Até lá, uma exportação periódica do catálogo para JSON também funciona.
+2. **Base de conhecimento real.** Escreva as políticas da loja (frete, trocas, pagamento, cuidados), com as palavras que as clientes usam, porque a busca é lexical (ver [Limitações conhecidas](#limitações-conhecidas)).
+3. **Escolha do provedor de LLM.** Até aqui só o Claude Haiku 5.5 passou o eval completo. Na escolha, pese a retenção de dados e o uso para treino (LGPD), o custo por mensagem e o limite de taxa. Decida antes do passo 4, porque o eval vale para o modelo em que rodou.
+4. **Eval da loja.** Com a base nova e o modelo escolhido, reescreva `evals/cases.jsonl` e rode `python -m evals.run_evals` até a injection resistance ficar em 100%.
+5. **Widget de chat.** Não existe UI neste repositório. Falta:
+   - o widget no frontend da loja, que mostra `answer` como texto puro e os cards a partir de `products`;
+   - uma rota interna no backend da loja que chama o `/chat` com o token de serviço (o token nunca vai ao navegador), envia o id de sessão da cliente em `X-End-User-Id` e devolve o `conversation_id` na mensagem seguinte.
+6. **Estado fora do processo.** Rate limit, teto diário de tokens e conversas ficam na memória de um único processo. Para rodar com mais de um worker ou não perder conversas ao reiniciar, mova esse estado para o Redis.
+7. **Deploy.** Ainda não há Dockerfile. O serviço deve rodar em rede interna, atrás de HTTPS, com limite de tamanho de corpo no proxy reverso e os alertas de `ops/prometheus-alerts.yml` ligados.
+
+Depois disso vêm os itens do [Roadmap](#roadmap) (busca híbrida, status de pedido).
 
 ## Limitações conhecidas
 
