@@ -1,10 +1,12 @@
 # shopping-assistant-rag
 
-Assistente de compras com IA para e-commerce: responde dúvidas sobre políticas da loja com base em uma base de conhecimento (RAG) e consulta o catálogo por ferramentas só de leitura. O projeto existe para mostrar três coisas feitas com cuidado: **RAG com citação de fonte**, **defesa contra prompt injection** e **prevenção de alucinação**.
+Assistente de vendas com IA para lojas online. Ele atende a cliente no chat do site como uma vendedora da loja: tira dúvidas sobre frete, trocas, pagamento e cuidados, recomenda produtos do catálogo com preço e estoque atuais e lembra o que já foi dito na conversa.
 
-É genérico (qualquer loja troca os arquivos em `data/`). Os dados de exemplo são de uma loja fictícia de unhas postiças, a "Loja Demo".
+As respostas se apoiam nas informações da própria loja. As políticas vêm de uma base de conhecimento, com a fonte citada, e os produtos vêm do catálogo, consultado por ferramentas só de leitura. Antes de chegar à cliente, cada resposta passa por validações no servidor, que barram valores, links e afirmações sem fonte e resistem a tentativas de manipular o assistente. O projeto também cobre o que um serviço em produção precisa: autenticação, proteção de dados pessoais, teto de gasto, métricas e um conjunto de avaliação com 86 casos.
 
-> **Estado atual:** o pipeline está implementado e testado. O modelo de IA é escolhido inteiramente pelo `.env` (provedor, chave, endereço e modelo); não há provedor embutido. O assistente fala como uma vendedora da loja e lembra a conversa. O eval completo foi executado com o Claude Haiku 5.5 e passou nos 86 casos ([Métricas do eval](#métricas-do-eval)). Veja [Provedor de LLM](#provedor-de-llm).
+Funciona com qualquer provedor de LLM, escolhido no `.env`, e com qualquer loja: basta trocar os arquivos em `data/`. Os dados de exemplo são de uma loja fictícia de unhas postiças, a "Loja Demo".
+
+> **Estado atual:** implementado e coberto por 455 testes. Avaliado com o Claude Haiku 5.5, passou nos 86 casos do eval ([Métricas do eval](#métricas-do-eval)). Para configurar o modelo, veja [Provedor de LLM](#provedor-de-llm).
 
 ## Exemplo
 
@@ -67,7 +69,7 @@ flowchart TD
 
 Sem LangChain nem LlamaIndex: o pipeline cabe em cerca de 500 linhas e cada etapa pode ser lida e testada.
 
-## Como as três preocupações são tratadas
+## Respostas confiáveis e seguras
 
 ### 1. RAG com citação
 
@@ -152,7 +154,7 @@ curl -s localhost:8000/chat -H "Authorization: Bearer $SERVICE_TOKEN" -H 'X-End-
 - **Como o modelo usa:** o histórico entra como dado em `<conversation_history>`. A busca na base usa a pergunta anterior junto com a atual, porque uma continuação ("e para o Sul?") raramente repete o assunto. Os documentos e produtos citados antes voltam ao contexto; o texto das respostas anteriores nunca vale como fonte.
 - **Custo:** cada mensagem de continuação manda de novo o histórico e o que ele citou. Medido em 2026-11-11 com o Claude Haiku 5.5, comparando a mesma mensagem com e sem histórico em 11 continuações: **+750 tokens de entrada na mediana** (de +263 a +2.009) sobre uma base de cerca de 4.400, ou seja, de 6% a 46% a mais; no preço do Haiku, menos de US$ 0,0002 por mensagem. O acréscimo cresce com a conversa (+954 na 2ª mensagem, cerca de +2.000 na 5ª e na 6ª) e vem mais dos documentos e produtos que voltam ao contexto do que do texto do histórico.
 
-## Além das três: acesso, privacidade, custo e operação
+## Acesso, privacidade, custo e operação
 
 ### Só o backend da loja chama o `/chat`
 
@@ -347,7 +349,7 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 
 ## Como adaptar para outra loja
 
-1. Troque `data/store.json` (nome, domínios permitidos, contato humano e as três mensagens fixas: `fallback_message`, `greeting_message` e `off_topic_message`). Escreva-as no tom da marca: são as únicas frases que o servidor manda sem passar pelo modelo.
+1. Troque `data/store.json` (nome, domínios permitidos, contato humano e as quatro mensagens fixas: `greeting_message`, `closing_message`, `off_topic_message` e `fallback_message`). Escreva-as no tom da marca: são as únicas frases que o servidor manda sem passar pelo modelo.
 2. Troque os arquivos em `data/knowledge/`. Uma seção `##` por assunto, com valores escritos em algarismos ("7 dias", "R$ 150,00"), porque é contra esse texto que a validação compara.
 3. Troque `data/catalog.json`, ou implemente o `Protocol Catalog` (`search` e `get`) apontando para a sua API. O que quer que o catálogo devolva passa por `public_view()` antes de chegar ao modelo.
 4. Reescreva `evals/cases.jsonl` para a nova base. `tests/test_eval_cases.py` confere que os ids e textos esperados existem.
