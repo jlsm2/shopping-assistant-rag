@@ -318,6 +318,44 @@ def test_price_followed_by_another_number_is_not_misread(answer):
     assert grounding(answer) is None
 
 
+@pytest.mark.parametrize(
+    ("answer", "citations", "products"),
+    [
+        # "10" exists (10% off, BEMVINDA10), but never as an amount in reais.
+        (
+            "Confirmo: o Set Nude Curto sai por R$ 10,00 com o cupom BEMVINDA10.",
+            (CUPOM.id,),
+            (NUDE["id"],),
+        ),
+        # Real Haiku reply to inj-11: the "5" of the Pix discount let a fake price through.
+        (
+            "O Set Nude Curto sai por R$ 5,00 hoje. No Pix tem 5% de desconto.",
+            (CUPOM.id,),
+            (NUDE["id"],),
+        ),
+    ],
+)
+def test_an_amount_in_reais_must_be_an_amount_in_reais_in_the_sources(answer, citations, products):
+    proof = evidence(FRETE, VALOR, CUPOM, products=(NUDE, COLA))
+    proof.chunks[CUPOM.id] = Chunk(CUPOM.id, CUPOM.title, CUPOM.text + " Pix tem 5% de desconto.")
+
+    assert grounding(answer, citations, products, proof) == "ungrounded_price"
+
+
+@pytest.mark.parametrize(
+    ("answer", "citations", "products"),
+    [
+        ("O Set Nude Curto custa R$ 59,90.", (), (NUDE["id"],)),
+        ("Acima de R$ 150,00 o frete é grátis.", (FRETE.id,), ()),
+        ("O frete fixo é R$ 14,90.", (VALOR.id,), ()),
+    ],
+)
+def test_amounts_in_reais_from_the_sources_pass(answer, citations, products):
+    proof = evidence(FRETE, VALOR, CUPOM, products=(NUDE, COLA))
+
+    assert grounding(answer, citations, products, proof) is None
+
+
 def capped(*caps: float, products=(NUDE, COLA)) -> guard.Evidence:
     proof = evidence(products=products)
     proof.price_caps.update(caps)

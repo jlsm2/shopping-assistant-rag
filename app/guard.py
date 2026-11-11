@@ -171,6 +171,7 @@ def leaks_prompt(text: str, system_prompt: str, canary: str) -> bool:
 # --- grounding ---------------------------------------------------------------
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_AMOUNT = re.compile(r"R\$\s*(\d+(?:[.,]\d+)*)")
 _THOUSANDS = re.compile(r"\d{1,3}(?:\.\d{3})+")
 _CODE = re.compile(r"[a-z0-9]+")
 _SENSITIVE = re.compile(r"\b(?:senha|cvv|cpf|codigo de seguranca|(?:numero|dados) do cartao)\b")
@@ -190,6 +191,11 @@ def canonical_number(raw: str) -> str:
         return re.sub(r"\D", "", raw)
     integer, fraction = integer.lstrip("0") or "0", fraction.rstrip("0")
     return f"{integer}.{fraction}" if fraction else integer
+
+
+def extract_amounts(text: str) -> set[str]:
+    """Numbers written as an amount in reais ("R$ 59,90", "R$150")."""
+    return {canonical_number(raw) for raw in _AMOUNT.findall(text)}
 
 
 def extract_numbers(text: str) -> set[str]:
@@ -260,9 +266,15 @@ def validate_grounding(
     if not citations and not products:
         return "no_evidence_cited"
     texts = evidence.cited_texts(citations, products)
-    known = set().union(*map(extract_numbers, texts)) | _true_price_caps(products, evidence)
+    caps = _true_price_caps(products, evidence)
+    known = set().union(*map(extract_numbers, texts)) | caps
     if extract_numbers(answer) - known:
         return "ungrounded_number"
+    # A number is not enough for a price: "R$ 5,00" must not borrow the "5" of
+    # "5% no Pix". An amount needs an amount in the sources or a cited price.
+    prices = {canonical_number(f"{evidence.products[i]['price']:.2f}") for i in products}
+    if extract_amounts(answer) - (set().union(*map(extract_amounts, texts)) | prices | caps):
+        return "ungrounded_price"
     if extract_codes(answer) - set().union(*map(extract_codes, texts)):
         return "ungrounded_code"
     if has_unknown_long_number(answer, texts):
