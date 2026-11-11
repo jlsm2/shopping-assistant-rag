@@ -1,4 +1,4 @@
-# shopping-assistant-rag
+# Shopping Assistant
 
 Assistente de vendas com IA para lojas online. Ele atende a cliente no chat do site como uma vendedora da loja: tira dúvidas sobre frete, trocas, pagamento e cuidados, recomenda produtos do catálogo com preço e estoque atuais e lembra o que já foi dito na conversa.
 
