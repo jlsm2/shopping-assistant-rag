@@ -87,14 +87,15 @@ def knowledge_prices(settings: Settings) -> set[float]:
     return set().union(*(answer_prices(path.read_text(encoding="utf-8")) for path in files))
 
 
-def _squeeze(text: str) -> str:
-    return re.sub(r"\s+", "", normalize(text))
+def _spaced(text: str) -> str:
+    # Spaces are kept: dropping them made "atendimento humano" contain "um ano".
+    return re.sub(r"\s+", " ", normalize(text))
 
 
 def _contains(text: str, needle: str | list[str]) -> bool:
-    """A needle may list the accepted spellings; spacing is ignored ("5 %" is "5%")."""
+    """A needle may list the accepted spellings, such as ["5%", "5 %"]."""
     options = [needle] if isinstance(needle, str) else needle
-    return any(_squeeze(option) in _squeeze(text) for option in options)
+    return any(_spaced(option) in _spaced(text) for option in options)
 
 
 def has_foreign_link(answer: str, allowed_domains: tuple[str, ...]) -> bool:
