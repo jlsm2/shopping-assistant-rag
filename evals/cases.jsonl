@@ -1,7 +1,7 @@
 {"id": "faq-01", "type": "answer", "question": "Como eu falo com uma atendente de verdade?", "expect_citation": "faq#como-falar-com-o-atendimento", "must_contain": ["90000-0000"]}
 {"id": "faq-02", "type": "answer", "question": "Qual o horário de atendimento de vocês?", "expect_citation": "faq#como-falar-com-o-atendimento", "must_contain": ["segunda a sexta"]}
 {"id": "faq-03", "type": "answer", "question": "Tem desconto pagando no Pix?", "expect_citation": "faq#formas-de-pagamento", "must_contain": ["5%"]}
-{"id": "faq-04", "type": "answer", "question": "Dá pra parcelar no cartão?", "expect_citation": "faq#formas-de-pagamento", "must_contain": ["3x"]}
+{"id": "faq-04", "type": "answer", "question": "Dá pra parcelar no cartão?", "expect_citation": "faq#formas-de-pagamento", "must_contain": [["3x", "3 vezes", "três vezes"]]}
 {"id": "faq-05", "type": "answer", "question": "Vocês aceitam boleto?", "expect_citation": "faq#formas-de-pagamento", "must_contain": ["boleto"]}
 {"id": "faq-06", "type": "answer", "question": "Tem cupom de desconto para a primeira compra?", "expect_citation": "faq#cupom-de-primeira-compra", "must_contain": ["BEMVINDA10", "10%"]}
 {"id": "faq-07", "type": "answer", "question": "Como sei qual tamanho de unha serve em mim?", "expect_citation": "faq#como-escolher-o-tamanho-das-unhas", "must_contain": []}
@@ -14,7 +14,7 @@
 {"id": "troca-04", "type": "answer", "question": "Recebi um produto diferente do que pedi.", "expect_citation": "trocas-e-devolucoes#produto-com-defeito-ou-errado", "must_contain": []}
 {"id": "troca-05", "type": "answer", "question": "Como faço para solicitar uma devolução?", "expect_citation": "trocas-e-devolucoes#como-solicitar-troca-ou-devolucao", "must_contain": ["WhatsApp"]}
 {"id": "troca-06", "type": "answer", "question": "Em quanto tempo recebo o reembolso de uma compra no Pix?", "expect_citation": "trocas-e-devolucoes#prazo-de-reembolso", "must_contain": ["5 dias"]}
-{"id": "troca-07", "type": "answer", "question": "O estorno no cartão de crédito demora quanto?", "expect_citation": "trocas-e-devolucoes#prazo-de-reembolso", "must_contain": ["2 faturas"]}
+{"id": "troca-07", "type": "answer", "question": "O estorno no cartão de crédito demora quanto?", "expect_citation": "trocas-e-devolucoes#prazo-de-reembolso", "must_contain": [["2 faturas", "duas faturas"]]}
 {"id": "troca-08", "type": "answer", "question": "Posso trocar um kit que já abri?", "expect_citation": "trocas-e-devolucoes#itens-que-nao-podem-ser-trocados", "must_contain": []}
 {"id": "troca-09", "type": "answer", "question": "Quem paga o frete da troca?", "expect_citation": "trocas-e-devolucoes#prazo-para-troca", "must_contain": []}
 {"id": "frete-01", "type": "answer", "question": "A partir de quanto o frete é grátis?", "expect_citation": "frete-e-prazos#frete-gratis", "must_contain": ["R$ 150"]}

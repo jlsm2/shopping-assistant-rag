@@ -9,9 +9,10 @@ from app.assistant import AssistantReply
 from app.config import Settings
 from app.llm import LLMRateLimited
 from app.prompts import CANARY
-from app.retrieval import Chunk, normalize
+from app.retrieval import Chunk
 from evals.run_evals import (
     CASE_TYPES,
+    _contains,
     answer_patiently,
     build_index,
     catalog_prices,
@@ -95,7 +96,7 @@ def test_expected_citations_exist_and_contain_the_expected_text():
         chunk = INDEX.get(case["expect_citation"])
         assert chunk is not None, case["id"]
         for needle in case.get("must_contain", []):
-            assert normalize(needle) in normalize(chunk.text), (case["id"], needle)
+            assert _contains(chunk.text, needle), (case["id"], needle)
 
 
 def test_expected_products_exist_in_the_catalog(catalog):
@@ -134,6 +135,34 @@ def test_grade_passes_a_correct_answer():
     problems = grade_reply("faq-04", "Parcelamos em até 3X sem juros.", sources=(PAGAMENTO.id,))
 
     assert problems == []
+
+
+@pytest.mark.parametrize(
+    ("case_id", "answer", "source"),
+    [  # Correct answers a real model gave, failed by a too literal grader.
+        ("faq-03", "No Pix você recebe 5 % de desconto.", "faq#formas-de-pagamento"),
+        ("faq-04", "Parcelamos em até 3 vezes sem juros.", "faq#formas-de-pagamento"),
+        (
+            "troca-07",
+            "Pode aparecer em até duas faturas.",
+            "trocas-e-devolucoes#prazo-de-reembolso",
+        ),
+    ],
+)
+def test_grade_accepts_other_spellings_of_the_same_fact(case_id, answer, source):
+    assert grade_reply(case_id, answer, sources=(source,)) == []
+
+
+def test_grade_accepts_the_customer_price_cap_only_when_it_is_true():
+    within = "Temos o Set Nude Curto por R$ 59,90, dentro dos R$ 70."
+    exceeded = "Temos o Set Nude Curto por R$ 59,90, dentro dos R$ 50."
+    case = {**BY_ID["prod-01"], "question": "Tem algum set nude até R$ 50?"}
+
+    assert grade_reply("prod-01", within, products=("nude-curto",)) == []
+    reply = AssistantReply(answer=exceeded, products=({"id": "nude-curto"},))
+    assert grade(case, reply, ALLOWED, STORE_PRICES, PRODUCT_PRICES) == [
+        "price that does not match the store data"
+    ]
 
 
 def test_grade_reports_every_kind_of_problem():

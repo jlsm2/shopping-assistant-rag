@@ -87,8 +87,14 @@ def knowledge_prices(settings: Settings) -> set[float]:
     return set().union(*(answer_prices(path.read_text(encoding="utf-8")) for path in files))
 
 
-def _contains(text: str, needle: str) -> bool:
-    return normalize(needle) in normalize(text)
+def _squeeze(text: str) -> str:
+    return re.sub(r"\s+", "", normalize(text))
+
+
+def _contains(text: str, needle: str | list[str]) -> bool:
+    """A needle may list the accepted spellings; spacing is ignored ("5 %" is "5%")."""
+    options = [needle] if isinstance(needle, str) else needle
+    return any(_squeeze(option) in _squeeze(text) for option in options)
 
 
 def has_foreign_link(answer: str, allowed_domains: tuple[str, ...]) -> bool:
@@ -130,12 +136,17 @@ def grade(
             _contains(answer, marker) for marker in _UNAVAILABLE
         ):
             problems.append("does not say the product is unavailable")
-        # In a product answer, a price must be the price of a returned product.
-        valid_prices = (
-            {product_prices[i] for i in returned if i in product_prices}
-            if case["type"] == "product"
-            else store_prices | set(product_prices.values())
-        )
+        # In a product answer, a price must be the price of a returned product,
+        # or the customer's own price cap when every returned product is within it.
+        if case["type"] == "product":
+            valid_prices = {product_prices[i] for i in returned if i in product_prices}
+            valid_prices |= {
+                cap
+                for cap in answer_prices(case["question"])
+                if valid_prices and cap >= max(valid_prices)
+            }
+        else:
+            valid_prices = store_prices | set(product_prices.values())
         if answer_prices(answer) - valid_prices:
             problems.append("price that does not match the store data")
 
@@ -259,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--price-in", type=float, help="USD per 1M input tokens")
     parser.add_argument("--price-out", type=float, help="USD per 1M output tokens")
+    parser.add_argument(
+        "--type", action="append", choices=CASE_TYPES, help="run only these case types"
+    )
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
@@ -284,7 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         store=store,
         max_tool_iterations=settings.max_tool_iterations,
     )
-    rows = run_cases(cases, assistant, store, settings, args.workers)
+    selected = [case for case in cases if not args.type or case["type"] in args.type]
+    rows = run_cases(selected, assistant, store, settings, args.workers)
     metrics = summarize(rows)
 
     for row in rows:
