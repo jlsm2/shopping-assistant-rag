@@ -145,7 +145,7 @@ curl -s localhost:8000/chat -H "Authorization: Bearer $SERVICE_TOKEN" -H 'X-End-
 ```
 
 - **Onde fica o histórico:** no servidor (`app/conversations.py`). O cliente só tem o id, que é aleatório (32 caracteres) e não dá para adivinhar.
-- **De quem é a conversa:** da cliente que a começou, identificada pelo mesmo `X-End-User-Id` do rate limit. Outra cliente que mande o mesmo id recebe uma conversa nova e vazia. Um id desconhecido ou expirado também começa do zero, e a resposta traz o id novo.
+- **De quem é a conversa:** da cliente que a começou, identificada pelo mesmo `X-End-User-Id` do rate limit. Outra cliente que mande o mesmo id recebe uma conversa nova e vazia. Um id desconhecido ou expirado também começa do zero, e a resposta traz o id novo. **Sem o `X-End-User-Id`, todas as conversas pertencem ao IP do backend** e a única proteção passa a ser o segredo do id: o backend nunca deve mostrar o id de uma cliente para outra.
 - **O que é guardado:** as últimas 4 trocas, com a pergunta já sem dados pessoais e a resposta que a cliente recebeu (nunca um rascunho barrado). Uma conversa parada há 30 minutos é esquecida; no máximo 10 mil conversas ficam na memória, e as mais antigas saem primeiro.
 - **Como o modelo usa:** o histórico entra como dado em `<conversation_history>`. A busca na base usa a pergunta anterior junto com a atual, porque uma continuação ("e para o Sul?") raramente repete o assunto. Os documentos e produtos citados antes voltam ao contexto; o texto das respostas anteriores nunca vale como fonte.
 - **Custo:** cada mensagem de continuação manda de novo o histórico e o que ele citou. São no máximo 4 trocas curtas, mas o acréscimo por mensagem ainda não foi medido em separado.
