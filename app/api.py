@@ -1,5 +1,6 @@
 """HTTP API: POST /chat, GET /health and GET /metrics."""
 
+import hashlib
 import hmac
 import ipaddress
 import logging
@@ -20,7 +21,7 @@ from app.assistant import Assistant
 from app.budget import TokenBudget
 from app.catalog import JsonCatalog
 from app.config import Settings, Store
-from app.conversations import ConversationStore
+from app.conversations import ConversationStore, Turn
 from app.guard import MAX_INPUT_CHARS, InvalidInput
 from app.llm import LLMClient, LLMError, LLMRateLimited, LLMUnavailable, Usage
 from app.providers import build_llm
@@ -65,7 +66,9 @@ class ChatResponse(BaseModel):
     sources: list[Source]
     products: list[Product]
     fallback: bool
-    conversation_id: str  # send it with the next message to continue the conversation
+    # Send it with the next message to continue the conversation. None when the
+    # request had no X-End-User-Id, because then nothing is remembered.
+    conversation_id: str | None
 
 
 class RateLimiter:
@@ -228,8 +231,7 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
         # in a header, which is trusted because the request is authenticated.
         end_user = request.headers.get(END_USER_HEADER, "")[:MAX_END_USER_CHARS]
         connection = request.client.host if request.client else None
-        customer = client_key(end_user or connection)
-        wait = limiter.retry_after(customer)
+        wait = limiter.retry_after(client_key(end_user or connection))
         if wait:
             raise HTTPException(
                 429,
@@ -257,8 +259,16 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
             )
 
         # A conversation belongs to the customer who started it: anyone else
-        # sending its id gets a new, empty one.
-        conversation_id, history = conversations.open(body.conversation_id, customer)
+        # sending its id gets a new, empty one. The owner is a hash of the whole
+        # header, so ids never collide the way rate-limit keys may (cut, /64).
+        # Without the header every customer would share the backend's address,
+        # so nothing is remembered.
+        raw_end_user = request.headers.get(END_USER_HEADER, "")
+        conversation_id: str | None = None
+        history: tuple[Turn, ...] = ()
+        if raw_end_user:
+            owner = hashlib.sha256(raw_end_user.encode()).hexdigest()
+            conversation_id, history = conversations.open(body.conversation_id, owner)
         try:
             reply = request.app.state.assistant.answer(body.message, history)
         except (InvalidInput, LLMError) as error:
@@ -269,8 +279,8 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
                 # The provider message stays in the server log, never in the response.
                 logger.exception("llm_error request_id=%s", request.state.request_id)
             raise http_error from error
-        if reply.turn:
-            conversations.append(conversation_id, customer, reply.turn)
+        if reply.turn and conversation_id:
+            conversations.append(conversation_id, owner, reply.turn)
         if reply.fallback:
             metrics.inc("chat_fallbacks_total", reason=reply.reason or "unknown")
         record("fallback" if reply.fallback else "answered", reply.reason, reply.usage)

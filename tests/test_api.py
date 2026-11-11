@@ -201,7 +201,7 @@ def test_chat_returns_answer_with_sources():
 
     assert response.status_code == 200
     body = response.json()
-    assert len(body.pop("conversation_id")) >= 32
+    assert body.pop("conversation_id") is None  # no X-End-User-Id: nothing is remembered
     assert body == {
         "answer": "A troca é em até 7 dias corridos.",
         "sources": [{"id": TROCA, "title": "Prazo para troca"}],
@@ -236,10 +236,27 @@ def test_the_conversation_id_brings_the_history_to_the_next_message():
     assert QUESTION["message"] in history and "7 dias corridos" in history
 
 
-def test_another_customer_cannot_continue_someone_elses_conversation():
-    replies, seen = conversation("ana", "bia")
+@pytest.mark.parametrize(
+    ("owner", "other"),
+    [
+        ("ana", "bia"),
+        ("a" * 128 + "1", "a" * 128 + "2"),  # once cut to 128 characters: same owner
+        ("2001:db8::1", "2001:db8::2"),  # once folded into the same IPv6 /64
+    ],
+)
+def test_another_customer_cannot_continue_someone_elses_conversation(owner, other):
+    replies, seen = conversation(owner, other)
 
     assert replies[1]["conversation_id"] != replies[0]["conversation_id"]
+    assert QUESTION["message"] not in seen[1]
+
+
+def test_without_x_end_user_id_nothing_is_remembered():
+    # Security review: without the header every customer shared the backend's IP
+    # as owner, so anyone holding an id could read that conversation.
+    replies, seen = conversation("ana", "")
+
+    assert replies[1]["conversation_id"] is None
     assert QUESTION["message"] not in seen[1]
 
 
@@ -247,9 +264,9 @@ def test_an_expired_or_unknown_conversation_starts_over():
     client = client_for(final("A troca é em até 7 dias corridos.", citations=(TROCA,)))
 
     body = {**QUESTION, "conversation_id": "a" * 32}
-    reply = client.post("/chat", json=body).json()
+    reply = client.post("/chat", json=body, headers={"X-End-User-Id": "ana"}).json()
 
-    assert reply["conversation_id"] != "a" * 32
+    assert reply["conversation_id"] not in (None, "a" * 32)
 
 
 @pytest.mark.parametrize("conversation_id", ["curto", "x" * 65, "tem espaço aqui 1234567890", 7])
