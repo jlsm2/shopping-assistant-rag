@@ -33,6 +33,7 @@ from app.telemetry import request_id
 logger = logging.getLogger(__name__)
 
 MAX_PRODUCT_RESULTS = 5
+CATALOG_MATCHES = 3  # products searched by the server for every question
 MAX_TOOL_CALLS_PER_TURN = 5
 
 ANSWER_SCHEMA: dict[str, Any] = {
@@ -150,12 +151,16 @@ class Assistant:
             chunks={chunk.id: chunk for chunk in chunks},
             store_facts=(self._store.human_contact,),
         )
-        messages: list[Message] = [UserMessage(_render_user_turn(chunks, question))]
         usage = Usage()
         if self.budget and self.budget.exhausted():
             # Out of money for today: still point the customer to a human.
             return self._fallback("budget_exhausted", usage)
         deadline = self._clock() + self._timeout_seconds
+        # Models sometimes give up without calling the search, so the server
+        # searches the question first; the model can still search again.
+        matches = self._catalog_matches(question)
+        evidence.products.update({view["id"]: view for view in matches})
+        messages: list[Message] = [UserMessage(_render_user_turn(chunks, matches, question))]
 
         for iteration in range(self._max_tool_iterations + 1):
             remaining = deadline - self._clock()
@@ -224,6 +229,15 @@ class Assistant:
             usage=usage,
         )
 
+    def _catalog_matches(self, question: str) -> list[dict[str, Any]]:
+        try:
+            found = self._catalog.search(question)
+            return [public_view(product) for product in found[:CATALOG_MATCHES]]
+        except Exception:
+            # The model can still call the search tool, which reports the failure.
+            logger.exception("catalog_prefetch_failed request_id=%s", request_id.get())
+            return []
+
     def _run_tool(self, call: ToolCall, evidence: guard.Evidence) -> ToolResult:
         input_model = TOOL_INPUTS.get(call.name)
         if input_model is None:
@@ -268,9 +282,10 @@ class Assistant:
         )
 
 
-def _render_user_turn(chunks: list[Chunk], question: str) -> str:
+def _render_user_turn(chunks: list[Chunk], matches: list[dict[str, Any]], question: str) -> str:
     documents = "\n".join(guard.wrap_document(chunk) for chunk in chunks)
     return (
         f"<documents>\n{documents or '(nenhum documento encontrado)'}\n</documents>\n\n"
+        f"<catalog>\n{guard.wrap_tool_data(matches)}\n</catalog>\n\n"
         f"{guard.wrap_customer_message(question)}"
     )
