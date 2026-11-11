@@ -10,7 +10,7 @@ Com cola, as unhas duram até 14 dias. Com os adesivos dupla face, duram de 3 a 
 
 ## Como remover sem danificar
 
-Nunca puxe nem force a unha postiça. Deixe as mãos de molho em água morna com sabão por 10 a 15 minutos e solte as unhas com cuidado pelas laterais, usando o palito. Se ainda estiver firme, deixe mais alguns minutos de molho. Retire o resíduo de cola com removedor sem acetona e hidrate as unhas com óleo de cutícula.
+Para tirar as unhas sem estragar a unha natural, nunca puxe nem force a unha postiça. Deixe as mãos de molho em água morna com sabão por 10 a 15 minutos e solte as unhas com cuidado pelas laterais, usando o palito. Se ainda estiver firme, deixe mais alguns minutos de molho. Retire o resíduo de cola com removedor sem acetona e hidrate as unhas com óleo de cutícula.
 
 ## Reutilizar as unhas
 
