@@ -370,6 +370,52 @@ O desenvolvimento está pausado neste ponto (2026-11-11). Trocar os arquivos aci
 
 Depois disso vêm os itens do [Roadmap](#roadmap) (busca híbrida, status de pedido).
 
+Os passos 1, 2, 5 e 7 já foram feitos numa loja real; ver [Adaptação para uma loja real: MUSH!](#adaptação-para-uma-loja-real-mush).
+
+## Adaptação para uma loja real: MUSH!
+
+Em 2026-11-11 o assistente foi adaptado para a MUSH! (mushnails.com.br), uma loja de unhas postiças artesanais, com sets de pronta entrega e sets sob medida. A loja é um monorepo com Next.js e Rails. O código adaptado fica no repositório da loja, em `services/assistant`; este repositório continua genérico, com a Loja Demo. Esta seção registra o que foi preciso mudar e o que a troca de dados fictícios por dados reais revelou.
+
+### No motor
+
+- **`HttpCatalog`.** Lê os produtos publicados da API da loja (`GET /api/v1/products`, todas as páginas) pela rede interna e guarda por 5 minutos. Se a atualização falha, a última cópia continua valendo; sem nenhuma cópia, o erro vira erro de ferramenta, como já previa o `Protocol Catalog`. O ranqueamento continua local, com a mesma pontuação do `JsonCatalog`, porque a busca da API da loja era um `ILIKE` no nome e não achava nada para "unha pra casamento".
+- **Mapeamento dos produtos.** O id é o slug. O preço é o que o checkout cobra: a API tinha `priceMin` e `priceMax`, mas o pedido cobra sempre o mínimo, então a faixa foi ignorada em vez de virar "a partir de". O estoque é a soma das variantes (formato, comprimento e tamanho), e a descrição lista só as combinações com estoque, para o modelo não oferecer uma que não dá para comprar. Os códigos da API, em inglês, são traduzidos para as palavras da cliente (`almond` vira "amendoado (almond)").
+- **Sem catálogo, o serviço não sobe.** A loja real não tem `catalog.json`: com `CATALOG_API_URL` vazio, o servidor recusa subir em vez de responder com dados de exemplo. Os produtos fictícios ficaram só como snapshot fixo do eval.
+- **Eval com outro conjunto de casos.** O runner ganhou `--cases`, e a Loja Demo virou fixture dos testes do motor, para os 456 testes continuarem validando as guardas com dados conhecidos.
+- **Prompt.** A dona pediu nenhum emoji de unha, e a regra entrou como "nunca 💅". A primeira versão dizia "emoji de unha" e quebrou o teste que garante que o prompt não fala do nicho da loja; o nicho continua vindo só do `store.json`.
+
+### Nos dados
+
+- **Contato.** A loja atende por e-mail e Instagram, sem WhatsApp. O handle `@nailsby.mush` foi lido como o domínio `nailsby.mush` pelo filtro de links e derrubaria toda resposta que o citasse; entrou em `allowed_domains`, o que é seguro porque `.mush` não é um domínio registrável.
+- **Base de conhecimento.** Foi escrita a partir das políticas publicadas e do FAQ, e cada afirmação foi conferida no código da loja. A conferência achou problemas no próprio site:
+  - o cartão de débito ainda aparecia no backend, mas o checkout não oferece mais; a dona confirmou que não aceita;
+  - a política prometia o código de rastreio por e-mail, mas nenhum e-mail o envia; a promessa saiu da base;
+  - o prazo de produção aparecia como "3 a 8 dias úteis" no FAQ e num e-mail e como "2 a 5" na política, nos termos e no formulário; a loja unificou em 3 a 8.
+
+  A lição: o assistente repete, com citação, as contradições do site. Rodar a base contra o código antes de publicar evitou que ele prometesse algo que a loja não cumpre.
+- **Valores que o admin muda ficaram fora.** Taxas de entrega por cidade e faixas de preço do sob medida mudam pelo painel; a base diz que aparecem no checkout, em vez de copiar números que ficariam velhos.
+- **Palavras da cliente.** "Como eu meço minhas unhas?" não achava a seção que só dizia "medir", até o texto ganhar a palavra "meço".
+- **Eval da loja.** São 39 casos: 22 de resposta, 6 de produto, 3 fora de escopo, 6 de injection e 2 de continuação. O recall da busca ficou em 100%. O eval completo, com o modelo, ainda não foi rodado na base da loja.
+
+### Na integração
+
+- **Container separado.** O assistente é um service do Docker Compose da loja, sem porta publicada, com 1 worker (o estado fica em memória) e 256 MB. Recebe só as próprias variáveis, nenhum segredo do banco ou do pagamento. Fica atrás de um profile e só sobe quando a chave do LLM está configurada.
+- **Rota interna no Next.js.** O navegador chama `POST /assistente`, e não `/api/...`, porque o nginx da loja manda `/api/*` para o Rails. A rota:
+  - guarda o token de serviço no servidor;
+  - recusa chamadas de outra origem, porque cada mensagem custa tokens;
+  - cria um id de sessão aleatório num cookie httpOnly e o envia como `X-End-User-Id`;
+  - só repassa links de produto que sejam páginas da loja (`/loja/<slug>`), como caminho relativo;
+  - nunca devolve a mensagem de erro do provedor.
+- **nginx.** A rota tem limite próprio, de 12 mensagens por minuto por IP.
+- **Widget.** Mostra a resposta como texto puro e os produtos como links com preço ou "Esgotado". Fica escondido no admin e no checkout, e só aparece quando o token está configurado.
+
+### O que continua faltando nessa loja
+
+- Rodar o eval completo com o modelo escolhido.
+- Busca: "francesinha" não acha o set "Aurora Francesa" (BM25, ver [Limitações conhecidas](#limitações-conhecidas)); sinônimos ou palavras-chave no cadastro resolveriam.
+- Regerar o snapshot do eval a partir do catálogo de produção, quando a loja tiver produtos publicados.
+- Os itens 6 (estado em Redis) e 3 (provedor) de [O que falta](#o-que-falta-para-atender-clientes-de-uma-loja-real).
+
 ## Limitações conhecidas
 
 - **Afirmação falsa sem número.** A validação pega ids, números, códigos, contatos e links. Uma frase como "aceitamos cheque", com uma citação válida, passa. O mesmo vale para número escrito por extenso ("noventa por cento") e para um valor real ligado à afirmação errada dentro do mesmo documento citado: "o Set Nude Curto sai por R$ 30,00 no Pix", citando a FAQ de pagamento (onde R$ 30,00 é a parcela mínima), passa, porque a validação não sabe a que cada valor se refere. O preço exibido no card do produto vem sempre do catálogo. Fechar isso exige checagem de implicação (segundo modelo ou NLI) ou respostas montadas por template.
