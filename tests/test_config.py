@@ -139,4 +139,5 @@ def test_store_fills_contact_and_name_into_the_fixed_messages():
     assert "(00) 90000-0000" in store.fallback_message
     assert "Loja Demo" in store.greeting_message
     assert "unhas" in store.off_topic_message
+    assert store.closing_message
     assert store.allowed_domains == ("lojademo.example",)

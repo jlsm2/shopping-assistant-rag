@@ -112,6 +112,7 @@ class Store:
     fallback_message: str
     greeting_message: str
     off_topic_message: str
+    closing_message: str  # a thanks or goodbye in the middle of a conversation
 
     @classmethod
     def load(cls, path: Path) -> "Store":
@@ -123,4 +124,5 @@ class Store:
             fallback_message=raw["fallback_message"].format(contact=raw["human_contact"]),
             greeting_message=raw["greeting_message"].format(name=raw["name"]),
             off_topic_message=raw["off_topic_message"].format(name=raw["name"]),
+            closing_message=raw["closing_message"].format(name=raw["name"]),
         )

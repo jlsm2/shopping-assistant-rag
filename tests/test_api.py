@@ -200,13 +200,65 @@ def test_chat_returns_answer_with_sources():
     response = client.post("/chat", json=QUESTION)
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert len(body.pop("conversation_id")) >= 32
+    assert body == {
         "answer": "A troca é em até 7 dias corridos.",
         "sources": [{"id": TROCA, "title": "Prazo para troca"}],
         "products": [],
         "fallback": False,
     }
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+# --- conversation memory -----------------------------------------------------------
+
+FOLLOW_UP = "E quem paga o frete da troca?"
+
+
+def conversation(*end_users: str) -> tuple[list[dict], list[str]]:
+    """Ask a question as the first end user, then a follow-up as each of the others
+    with the same conversation id. Returns the replies and the turns the model saw."""
+    client = client_for(*[final("A troca é em até 7 dias corridos.", citations=(TROCA,))] * 3)
+    replies = [client.post("/chat", json=QUESTION, headers={"X-End-User-Id": end_users[0]}).json()]
+    for end_user in end_users[1:]:
+        body = {"message": FOLLOW_UP, "conversation_id": replies[0]["conversation_id"]}
+        replies.append(client.post("/chat", json=body, headers={"X-End-User-Id": end_user}).json())
+    calls = client.app.state.assistant._llm.calls
+    return replies, [call["messages"][0].text for call in calls]
+
+
+def test_the_conversation_id_brings_the_history_to_the_next_message():
+    replies, seen = conversation("ana", "ana")
+
+    assert replies[1]["conversation_id"] == replies[0]["conversation_id"]
+    history = seen[1][: seen[1].index("</conversation_history>")]
+    assert QUESTION["message"] in history and "7 dias corridos" in history
+
+
+def test_another_customer_cannot_continue_someone_elses_conversation():
+    replies, seen = conversation("ana", "bia")
+
+    assert replies[1]["conversation_id"] != replies[0]["conversation_id"]
+    assert QUESTION["message"] not in seen[1]
+
+
+def test_an_expired_or_unknown_conversation_starts_over():
+    client = client_for(final("A troca é em até 7 dias corridos.", citations=(TROCA,)))
+
+    body = {**QUESTION, "conversation_id": "a" * 32}
+    reply = client.post("/chat", json=body).json()
+
+    assert reply["conversation_id"] != "a" * 32
+
+
+@pytest.mark.parametrize("conversation_id", ["curto", "x" * 65, "tem espaço aqui 1234567890", 7])
+def test_malformed_conversation_id_is_rejected(conversation_id):
+    client = client_for(final("A troca é em até 7 dias corridos.", citations=(TROCA,)))
+
+    response = client.post("/chat", json={**QUESTION, "conversation_id": conversation_id})
+
+    assert response.status_code == 422
 
 
 def test_chat_returns_products_built_from_the_catalog():

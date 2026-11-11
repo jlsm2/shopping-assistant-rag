@@ -4,5 +4,6 @@
   "human_contact": "(00) 90000-0000",
   "fallback_message": "Essa eu prefiro confirmar com a equipe, pra não te passar nada errado. Chama a gente no WhatsApp {contact} que a gente te ajuda rapidinho!",
   "greeting_message": "Oi! Que bom te ver por aqui 💅 Sou a assistente da {name}. Me conta o que você procura: uma cor, um formato, uma ocasião especial? Também tiro dúvidas sobre frete, trocas, pagamento e cuidados com as unhas.",
-  "off_topic_message": "Essa eu fico devendo! Por aqui eu sou especialista em unhas: te ajudo a escolher o set ideal e tiro dúvidas sobre frete, trocas, pagamento e cuidados. O que você está procurando?"
+  "closing_message": "Imagina, foi um prazer! Se surgir mais alguma dúvida, é só me chamar 💅",
+  "off_topic_message":"Essa eu fico devendo! Por aqui eu sou especialista em unhas: te ajudo a escolher o set ideal e tiro dúvidas sobre frete, trocas, pagamento e cuidados. O que você está procurando?"
 }

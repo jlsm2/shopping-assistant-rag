@@ -20,6 +20,7 @@ from app.assistant import Assistant
 from app.budget import TokenBudget
 from app.catalog import JsonCatalog
 from app.config import Settings, Store
+from app.conversations import ConversationStore
 from app.guard import MAX_INPUT_CHARS, InvalidInput
 from app.llm import LLMClient, LLMError, LLMRateLimited, LLMUnavailable, Usage
 from app.providers import build_llm
@@ -42,6 +43,8 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=MAX_INPUT_CHARS)
+    # The id from the previous reply; leave it out to start a conversation.
+    conversation_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{16,64}$")
 
 
 class Source(BaseModel):
@@ -62,6 +65,7 @@ class ChatResponse(BaseModel):
     sources: list[Source]
     products: list[Product]
     fallback: bool
+    conversation_id: str  # send it with the next message to continue the conversation
 
 
 class RateLimiter:
@@ -148,6 +152,7 @@ def _map_error(error: Exception) -> tuple[str, HTTPException]:
 def create_app(assistant: Assistant | None = None, settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     limiter = RateLimiter(settings.rate_limit_per_minute)
+    conversations = ConversationStore()
     metrics = Metrics()
 
     @asynccontextmanager
@@ -223,7 +228,8 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
         # in a header, which is trusted because the request is authenticated.
         end_user = request.headers.get(END_USER_HEADER, "")[:MAX_END_USER_CHARS]
         connection = request.client.host if request.client else None
-        wait = limiter.retry_after(client_key(end_user or connection))
+        customer = client_key(end_user or connection)
+        wait = limiter.retry_after(customer)
         if wait:
             raise HTTPException(
                 429,
@@ -250,8 +256,11 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
                 usage.output_tokens,
             )
 
+        # A conversation belongs to the customer who started it: anyone else
+        # sending its id gets a new, empty one.
+        conversation_id, history = conversations.open(body.conversation_id, customer)
         try:
-            reply = request.app.state.assistant.answer(body.message)
+            reply = request.app.state.assistant.answer(body.message, history)
         except (InvalidInput, LLMError) as error:
             kind, http_error = _map_error(error)
             metrics.inc("chat_errors_total", kind=kind)
@@ -260,6 +269,8 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
                 # The provider message stays in the server log, never in the response.
                 logger.exception("llm_error request_id=%s", request.state.request_id)
             raise http_error from error
+        if reply.turn:
+            conversations.append(conversation_id, customer, reply.turn)
         if reply.fallback:
             metrics.inc("chat_fallbacks_total", reason=reply.reason or "unknown")
         record("fallback" if reply.fallback else "answered", reply.reason, reply.usage)
@@ -268,6 +279,7 @@ def create_app(assistant: Assistant | None = None, settings: Settings | None = N
             sources=[Source(id=chunk.id, title=chunk.title) for chunk in reply.sources],
             products=[Product(**product) for product in reply.products],
             fallback=reply.fallback,
+            conversation_id=conversation_id,
         )
 
     return app

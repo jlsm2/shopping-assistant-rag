@@ -5,8 +5,8 @@ Single-turn on purpose: history sent by the client could forge assistant turns.
 
 import logging
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -15,6 +15,7 @@ from app import guard
 from app.budget import TokenBudget
 from app.catalog import Catalog, public_view
 from app.config import Store
+from app.conversations import Turn
 from app.llm import (
     AssistantMessage,
     LLMClient,
@@ -122,6 +123,7 @@ class AssistantReply:
     fallback: bool = False
     reason: str | None = None  # why it fell back; feeds logs and eval metrics
     usage: Usage = field(default_factory=Usage)
+    turn: Turn | None = None  # what the conversation remembers of this exchange
 
 
 class Assistant:
@@ -146,24 +148,30 @@ class Assistant:
         self._clock = clock
         self._system_prompt = build_system_prompt(store.name)
 
-    def answer(self, question: str) -> AssistantReply:
-        """Answer one customer message. Raises `guard.InvalidInput` and `LLMError`."""
+    def answer(self, question: str, history: Sequence[Turn] = ()) -> AssistantReply:
+        """Answer one customer message, given the earlier turns of its conversation.
+
+        Raises `guard.InvalidInput` and `LLMError`. The reply carries the turn to
+        remember, with the question already cleaned and personal data masked.
+        """
         question = guard.redact_pii(guard.clean_input(question))
-        chunks = self._index.search(question)
-        evidence = guard.Evidence(
-            chunks={chunk.id: chunk for chunk in chunks},
-            store_facts=(self._store.human_contact,),
+        reply = self._answer(question, tuple(history))
+        turn = Turn(
+            question,
+            reply.answer,
+            source_ids=tuple(chunk.id for chunk in reply.sources),
+            product_ids=tuple(product["id"] for product in reply.products),
         )
+        return replace(reply, turn=turn)
+
+    def _answer(self, question: str, history: tuple[Turn, ...]) -> AssistantReply:
         usage = Usage()
         if self.budget and self.budget.exhausted():
             # Out of money for today: still point the customer to a human.
             return self._fallback("budget_exhausted", usage)
         deadline = self._clock() + self._timeout_seconds
-        # Models sometimes give up without calling the search, so the server
-        # searches the question first; the model can still search again.
-        matches = self._catalog_matches(question)
-        evidence.products.update({view["id"]: view for view in matches})
-        messages: list[Message] = [UserMessage(_render_user_turn(chunks, matches, question))]
+        evidence, user_turn = self._context(question, history)
+        messages: list[Message] = [UserMessage(user_turn)]
 
         for iteration in range(self._max_tool_iterations + 1):
             remaining = deadline - self._clock()
@@ -201,8 +209,10 @@ class Assistant:
             # Canned too: steer back to the store without model-written claims.
             return self._fallback("off_topic", usage, self._store.off_topic_message)
         if parsed.outcome == "smalltalk":
-            # Canned text: a greeting never carries model-written claims.
-            return AssistantReply(answer=self._store.greeting_message, usage=usage)
+            # Canned text: a greeting never carries model-written claims. Mid-
+            # conversation it is a thanks or a goodbye, not a first hello.
+            message = self._store.closing_message if history else self._store.greeting_message
+            return AssistantReply(answer=message, usage=usage)
         if len(parsed.answer) > guard.MAX_ANSWER_CHARS:
             return self._fallback("answer_too_long", usage)
         try:
@@ -242,14 +252,40 @@ class Assistant:
             usage=usage,
         )
 
-    def _catalog_matches(self, question: str) -> list[dict[str, Any]]:
+    def _context(self, question: str, history: tuple[Turn, ...]) -> tuple[guard.Evidence, str]:
+        """What the model sees for this question, and the evidence it may cite.
+
+        Earlier answers are context, never evidence: what they cited is fetched
+        again (current price and stock) and only that counts.
+        """
+        chunks = self._index.search(question)
+        if history:
+            # A follow-up ("e para o Sul?") rarely names its subject; the
+            # previous question does.
+            chunks += self._index.search(f"{history[-1].question} {question}")
+            chunks += [self._index.get(i) for turn in history for i in turn.source_ids]
+        chunks = list({chunk.id: chunk for chunk in chunks if chunk}.values())
+        remembered = [i for turn in history for i in turn.product_ids]
+        # Models sometimes give up without calling the search, so the server
+        # searches the question first; the model can still search again.
+        matches = self._catalog_matches(question, remembered)
+        evidence = guard.Evidence(
+            chunks={chunk.id: chunk for chunk in chunks},
+            products={view["id"]: view for view in matches},
+            store_facts=(self._store.human_contact,),
+        )
+        return evidence, _render_user_turn(history, chunks, matches, question)
+
+    def _catalog_matches(self, question: str, remembered: list[str]) -> list[dict[str, Any]]:
         try:
-            found = self._catalog.search(question)
-            return [public_view(product) for product in found[:CATALOG_MATCHES]]
+            found = self._catalog.search(question)[:CATALOG_MATCHES]
+            found += [product for i in remembered if (product := self._catalog.get(i))]
+            views = [public_view(product) for product in found]
         except Exception:
             # The model can still call the search tool, which reports the failure.
             logger.exception("catalog_prefetch_failed request_id=%s", request_id.get())
             return []
+        return list({view["id"]: view for view in views}.values())
 
     def _run_tool(self, call: ToolCall, evidence: guard.Evidence) -> ToolResult:
         input_model = TOOL_INPUTS.get(call.name)
@@ -298,9 +334,17 @@ class Assistant:
         )
 
 
-def _render_user_turn(chunks: list[Chunk], matches: list[dict[str, Any]], question: str) -> str:
+def _render_user_turn(
+    history: tuple[Turn, ...], chunks: list[Chunk], matches: list[dict[str, Any]], question: str
+) -> str:
     documents = "\n".join(guard.wrap_document(chunk) for chunk in chunks)
+    turns = "\n".join(
+        f"<customer>{guard.escape(turn.question)}</customer>\n"
+        f"<assistant>{guard.escape(turn.answer)}</assistant>"
+        for turn in history
+    )
     return (
+        f"<conversation_history>\n{turns or '(início da conversa)'}\n</conversation_history>\n\n"
         f"<documents>\n{documents or '(nenhum documento encontrado)'}\n</documents>\n\n"
         f"<catalog>\n{guard.wrap_tool_data(matches)}\n</catalog>\n\n"
         f"{guard.wrap_customer_message(question)}"
