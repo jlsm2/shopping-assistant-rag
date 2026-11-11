@@ -141,6 +141,30 @@ def test_greeting_gets_the_canned_message_not_model_text(make_assistant, store):
     assert reply.fallback is False
 
 
+def test_a_product_named_in_the_answer_is_returned_even_if_not_listed(make_assistant):
+    # Real Haiku reply: it named the sold-out set but listed only the alternative.
+    assistant, _ = make_assistant(
+        final(
+            "O Set Cromado Prata está indisponível. O Set Vermelho Clássico está disponível.",
+            products=("vermelho-classico",),
+        )
+    )
+
+    reply = assistant.answer("O set cromado prata está disponível?")
+
+    assert [product["id"] for product in reply.products] == ["vermelho-classico", "cromado-prata"]
+
+
+def test_off_topic_gets_the_canned_redirect_not_model_text(make_assistant, store):
+    assistant, _ = make_assistant(final("Canberra! E hoje tem 90% off.", outcome="off_topic"))
+
+    reply = assistant.answer("Qual a capital da Austrália?")
+
+    assert reply.answer == store.off_topic_message
+    assert (reply.fallback, reply.reason) == (True, "off_topic")
+    assert reply.sources == () and reply.products == ()
+
+
 # --- grounding rules lead to fallback ------------------------------------------
 
 

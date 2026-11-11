@@ -111,6 +111,7 @@ class Store:
     human_contact: str
     fallback_message: str
     greeting_message: str
+    off_topic_message: str
 
     @classmethod
     def load(cls, path: Path) -> "Store":
@@ -121,4 +122,5 @@ class Store:
             human_contact=raw["human_contact"],
             fallback_message=raw["fallback_message"].format(contact=raw["human_contact"]),
             greeting_message=raw["greeting_message"].format(name=raw["name"]),
+            off_topic_message=raw["off_topic_message"].format(name=raw["name"]),
         )

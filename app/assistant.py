@@ -27,7 +27,7 @@ from app.llm import (
     UserMessage,
 )
 from app.prompts import CANARY, build_system_prompt
-from app.retrieval import Chunk, Index
+from app.retrieval import Chunk, Index, normalize
 from app.telemetry import request_id
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,10 @@ ANSWER_SCHEMA: dict[str, Any] = {
         "answer": {"type": "string"},
         "citations": {"type": "array", "items": {"type": "string"}},
         "products": {"type": "array", "items": {"type": "string"}},
-        "outcome": {"type": "string", "enum": ["answered", "smalltalk", "needs_human"]},
+        "outcome": {
+            "type": "string",
+            "enum": ["answered", "smalltalk", "off_topic", "needs_human"],
+        },
     },
     "required": ["answer", "citations", "products", "outcome"],
     "additionalProperties": False,
@@ -55,7 +58,7 @@ class ModelAnswer(BaseModel):
     answer: str
     citations: list[str]
     products: list[str]
-    outcome: Literal["answered", "smalltalk", "needs_human"]
+    outcome: Literal["answered", "smalltalk", "off_topic", "needs_human"]
 
 
 class SearchProductsInput(BaseModel):
@@ -194,6 +197,9 @@ class Assistant:
 
         if parsed.outcome == "needs_human":
             return self._fallback("needs_human", usage)
+        if parsed.outcome == "off_topic":
+            # Canned too: steer back to the store without model-written claims.
+            return self._fallback("off_topic", usage, self._store.off_topic_message)
         if parsed.outcome == "smalltalk":
             # Canned text: a greeting never carries model-written claims.
             return AssistantReply(answer=self._store.greeting_message, usage=usage)
@@ -217,7 +223,14 @@ class Assistant:
         if reason:
             return self._fallback(reason, usage)
 
-        products = tuple(evidence.products[i] for i in dict.fromkeys(parsed.products))
+        # A product named in the text but left out of the list still gets its card
+        # and its stock notice.
+        named = [
+            i
+            for i, view in evidence.products.items()
+            if normalize(view["name"]) in normalize(answer)
+        ]
+        products = tuple(evidence.products[i] for i in dict.fromkeys([*parsed.products, *named]))
         sold_out = [product["name"] for product in products if not product["in_stock"]]
         if sold_out and not guard.mentions_unavailability(answer):
             # Server-written, so stock is right even if the model glossed over it.
@@ -274,11 +287,14 @@ class Assistant:
         evidence.products.update({view["id"]: view for view in views})
         return ToolResult(call.id, guard.wrap_tool_data(payload))
 
-    def _fallback(self, reason: str, usage: Usage) -> AssistantReply:
+    def _fallback(self, reason: str, usage: Usage, message: str | None = None) -> AssistantReply:
         # The customer message is deliberately not logged.
         logger.info("fallback request_id=%s reason=%s", request_id.get(), reason)
         return AssistantReply(
-            answer=self._store.fallback_message, fallback=True, reason=reason, usage=usage
+            answer=message or self._store.fallback_message,
+            fallback=True,
+            reason=reason,
+            usage=usage,
         )
 
 
