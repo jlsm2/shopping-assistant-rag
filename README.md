@@ -373,4 +373,4 @@ O adaptador precisa garantir o que a segurança pressupõe (está detalhado no d
 
 ## Licença
 
-MIT.
+Todos os direitos reservados. O código está público para leitura e avaliação; copiar, modificar ou reutilizar, no todo ou em parte, exige autorização por escrito do autor. Ver [`LICENSE`](LICENSE).

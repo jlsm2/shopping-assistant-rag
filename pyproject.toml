@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "E-commerce shopping assistant: RAG with citations, prompt-injection defenses and deterministic grounding checks."
 readme = "README.md"
 requires-python = ">=3.12"
-license = "MIT"
+license = "LicenseRef-Proprietary"
 dependencies = [
     "anthropic>=2.8,<3",
     "openai>=2,<3",
